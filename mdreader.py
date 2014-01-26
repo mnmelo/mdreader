@@ -254,19 +254,19 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     
     Command-line argument list will default to:
     
-usage: %prog% [-h] [-f TRAJ] [-c STRUCT] [-o OUT] [-b TIME]
-              [-e TIME] [-skip FRAMES] [-v LEVEL] [-nats MULT]
-              [-mult MULT]
+    usage: %prog% [-h] [-f TRAJ] [-c STRUCT] [-o OUT] [-b TIME] [-e TIME] [-fmn]
+                  [-skip FRAMES] [-v LEVEL]
 
     optional arguments:
       -h, --help    show this help message and exit
-      -f TRAJ       file    The trajectory to analyze. (default: traj.xtc)
-      -c STRUCT     file    .gro or .pdb file with the same atom numbering as the trajectory. (default: confout.gro)
-      -o OUT        file    The main data output file. (default: data.xvg)
-      -b TIME       real    Time to begin analysis from. (default: 0)
-      -e TIME       real    Time to end analysis at. (default: inf)
-      -skip FRAMES  int     Number of frames to skip when analyzing. (default: 1)
-      -v LEVEL      enum    Verbosity level. 0:quiet, 1:progress 2:debug (default: 1)
+      -f TRAJ       file	The trajectory to analyze. (default: traj.xtc)
+      -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: confout.gro)
+      -o OUT        file	The main data output file. (default: data.xvg)
+      -b TIME       real	Time to begin analysis from. (default: 0)
+      -e TIME       real	Time to end analysis at. (default: inf)
+      -fmn          bool	Whether to interpret -b and -e as frame numbers. (default: False)
+      -skip FRAMES  int 	Number of frames to skip when analyzing. (default: 1)
+      -v LEVEL      enum	Verbosity level. 0:quiet, 1:progress 2:debug (default: 1)
 
     where %prog% is the 'prog' argument as supplied during initialization, or sys.argv[0] if none is provided.
     
@@ -309,8 +309,8 @@ usage: %prog% [-h] [-f TRAJ] [-c STRUCT] [-o OUT] [-b TIME]
         """
         self.add_argument('-f', metavar='TRAJ', dest='xtc', default=traj,
                 help = 'file\tThe trajectory to analyze.')
-        self.add_argument('-c', metavar='STRUCT', dest='gro', default=gro,
-                help = 'file\t.gro or .pdb file with the same atom numbering as the trajectory.')
+        self.add_argument('-s', metavar='TOPOL', dest='top', default=gro,
+                help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
         self.add_argument('-o', metavar='OUT', dest='outfile', default=out,
                 help = 'file\tThe main data output file.')
         self.add_argument('-b', metavar='TIME', type=float, dest='starttime', default=b,
@@ -369,12 +369,12 @@ usage: %prog% [-h] [-f TRAJ] [-c STRUCT] [-o OUT] [-b TIME]
         if self.opts.verbose:
             sys.stderr.write("Loading...\n")
         ## Post option handling
-        map(check_file,(self.opts.gro,self.opts.xtc))
+        map(check_file,(self.opts.top,self.opts.xtc))
         map(check_outfile,(self.opts.outfile,))
         map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
         if self.opts.endtime < self.opts.starttime:
             sys.exit('Error: Endtime lower than starttime.')
-        MDAnalysis.Universe.__init__(self, self.opts.gro, self.opts.xtc)
+        MDAnalysis.Universe.__init__(self, self.opts.top, self.opts.xtc)
 
         self.nframes = len(self.trajectory)
         if self.nframes is None or self.nframes < 1:
