@@ -36,10 +36,13 @@ def _parallel_launcher(rdr, w_id):
     """ Helper function for the parallel execution of registered functions.
 
     """
-    # block seems to be faster.
-    rdr.p_mode = 'block'
-    rdr.p_id = w_id
-    return rdr._reader(parallel=True)
+    if rdr.opts.mpi:
+        pass
+    else:
+        # block seems to be faster.
+        rdr.p_mode = 'block'
+        rdr.p_id = w_id
+        return rdr._reader(parallel=True)
 
 def _parallel_extractor(rdr, w_id):
     """ Helper function for the parallel extraction of trajectory coordinates/values.
@@ -50,13 +53,21 @@ def _parallel_extractor(rdr, w_id):
     rdr.p_id = w_id
     return rdr._extractor(parallel=True)
 
-def concat_tseries(lst, ret):
+def concat_tseries(lst, ret=None):
     """ Concatenates a list of Timeseries objects """
-    if len(lst[0]._tjcdx_ndx):
-        ret._cdx = numpy.concatenate([i._cdx for i in lst])
-    for attr in ret._props:
-        setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
-    return ret
+    if ret is not None:
+        if len(lst[0]._tjcdx_ndx):
+            ret._cdx = numpy.concatenate([i._cdx for i in lst])
+        for attr in ret._props:
+            setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
+        return ret
+    else:
+        if len(lst[0]._tjcdx_ndx):
+            ret._cdx = numpy.concatenate([i._cdx for i in lst])
+        for attr in ret._props:
+            setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
+        return ret
+
     
 def check_file(fname):
     if not os.path.exists(fname):
@@ -321,6 +332,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'bool\tWhether to interpret -b and -e as frame numbers.')
         self.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
+        self.add_argument('-mpi',  action='store_true', dest='mpi',
+                help = 'bool\tWhether to use mpi for parallelization (only relevant if the script already uses mdreader to paralleliz).')
         self.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if ver:
@@ -403,9 +416,26 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.totalframes = int(math.ceil(float(self.endframe-self.startframe+1)/self.opts.skip))
         #print "startframe: %d, endframe: %d, totalframes: %d" % (self.startframe, self.endframe, self.totalframes)
 
+        if self.opts.mpi:
+            from mpi4py import MPI
+            self.comm = MPI.COMM_WORLD()
+            self.p_id = self.comm.Get_rank()
+            self.p_num = self.comm.Get_size()
+
         self.parsed = True
-        if self.hasindex:
-            self._parse_ndx()
+        if self.p_id == 0:  # Either there is no MPI, or we're root
+            if self.hasindex:
+                self._parse_ndx()
+
+        if self.opts.mpi:   # Get ready to broadcast the index list
+            if self.p_id == 0:
+                tmp_ndx = [grp.indices() for grp in self.ndxgs]
+            else:
+                if self.hasindex:
+                    tmp_ndx = None
+            tmp_ndx = self.comm.bcast(tmp_ndx, root=0)
+            if self.p_id != 0:
+                self.ndxgs = [self.atoms[ndx] for ndx in tmp_ndx]
 
     def _parse_ndx(self):
         with open(self.opts.ndx) as NDX:
@@ -482,7 +512,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         The optional argument 'parallel' signals partial iteration in order to parallelize trajectory iteration.
         Output and parallelization will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
           MDreader.progress (default: None) can be one of 'frame', 'pct', 'both', 'empty', or None. It sets the output to frame numbers, %% progress, both, or nothing. If set to None behavior defaults to 'frame', or 'pct' when iterating in parallel block mode.
-          MDreader.p_mode (default: 'interleaved') sets either 'interleaved' or 'block' parallel iteration.
+          MDreader.p_mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
           When MDreader.p_mode=='block' MDreader.p_overlap (default: 0) sets how many frames blocks overlap, to allow multi frame analyses (say, an average) to pick up earlier on each block.
           MDreader.p_num (default: None) controls in how many blocks/segments to divide the iteration (the number of workers; will use all the processing cores if set to None) and MDreader.p_id sets the id of the current worker for reading and output purposes (to avoid terminal clobbering only p_id 0 will output). 
             **
@@ -643,16 +673,21 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 setattr(self._tseries, attr, None)
         mem *= len(self)
 
-        # This is potentially a lot of memory. Check it beforehand.
-        avail_mem = memoryCheck()
-        if 2*mem/(1024**2) > avail_mem.value:
-            raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
+        # This is potentially a lot of memory. Check it beforehand, except for MPI, which we trust the user to do themselves.
+        if not self.opts.mpi:
+            avail_mem = memoryCheck()
+            if 2*mem/(1024**2) > avail_mem.value:
+                raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
         if self.p_num is None and parallel:
             self.p_num = multiprocessing.cpu_count()
-        if self.p_num<2 or not parallel:
+        if self.p_num<2 or not parallel or self.opts.mpi:
             tseries = self._extractor()
+            if self.opts.mpi:
+                tseries = self.comm.gather(tseries, root=0)
+                if self.p_id == 0:
+                    tseries_c = concat_tseries(tseries)
         else:
             pool = Pool(processes=self.p_num)
             concat_tseries(pool.map(_parallel_extractor, [(self, i) for i in range(self.p_num)]), tseries)
@@ -717,7 +752,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             except AttributeError:
                 setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
         if self.i_totalframes:
-            for frame in self.iterate(parallel):
+            for frame in self.iterate(parallel or self.opts.mpi):
                 if self._tseries._cdx is not None:
                     self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,numpy.where(self._tseries._xyz)[0]]
                 for attr in self._tseries._props:
