@@ -36,8 +36,6 @@ def _parallel_launcher(rdr, w_id):
     """ Helper function for the parallel execution of registered functions.
 
     """
-    if rdr.opts.mpi:
-        pass
     else:
         # block seems to be faster.
         rdr.p_mode = 'block'
@@ -55,20 +53,14 @@ def _parallel_extractor(rdr, w_id):
 
 def concat_tseries(lst, ret=None):
     """ Concatenates a list of Timeseries objects """
-    if ret is not None:
-        if len(lst[0]._tjcdx_ndx):
-            ret._cdx = numpy.concatenate([i._cdx for i in lst])
-        for attr in ret._props:
-            setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
-        return ret
-    else:
-        if len(lst[0]._tjcdx_ndx):
-            ret._cdx = numpy.concatenate([i._cdx for i in lst])
-        for attr in ret._props:
-            setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
-        return ret
+    if ret is None:
+        ret = lst.pop(0)
+    if len(lst[0]._tjcdx_ndx):
+        ret._cdx = numpy.concatenate([i._cdx for i in lst])
+    for attr in ret._props:
+        setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
+    return ret
 
-    
 def check_file(fname):
     if not os.path.exists(fname):
         sys.exit('Error: Can\'t find file %s' % (fname))
@@ -687,7 +679,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if self.opts.mpi:
                 tseries = self.comm.gather(tseries, root=0)
                 if self.p_id == 0:
-                    tseries_c = concat_tseries(tseries)
+                    tseries = concat_tseries(tseries)
+                else:
+                    sys.exit(0)
         else:
             pool = Pool(processes=self.p_num)
             concat_tseries(pool.map(_parallel_extractor, [(self, i) for i in range(self.p_num)]), tseries)
