@@ -162,7 +162,7 @@ class memoryCheck():
     def __init__(self):
         if sys.platform == "linux2":
             self.value = self.linuxRam()
-        if sys.platform == "darwin":
+        elif sys.platform == "darwin":
             self.value = self.macRam()
         elif sys.platform == "win32":
             self.value = self.windowsRam()
@@ -260,7 +260,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     optional arguments:
       -h, --help    show this help message and exit
       -f TRAJ       file	The trajectory to analyze. (default: traj.xtc)
-      -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: confout.gro)
+      -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: topol.tpr)
       -o OUT        file	The main data output file. (default: data.xvg)
       -b TIME       real	Time to begin analysis from. (default: 0)
       -e TIME       real	Time to end analysis at. (default: inf)
@@ -302,7 +302,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def __len__(self):
         return self.totalframes
 
-    def setargs(self, traj='traj.xtc', gro='confout.gro', out='data.xvg', b=0, e=float('inf'), skip=1, v=1, ver=None):
+    def setargs(self, traj='traj.xtc', gro='topol.tpr', out='data.xvg', b=0, e=float('inf'), skip=1, v=1, ver=None):
         """ This function allows the modification of the default parameters of the default arguments without having
             to go through the hassle of overriding the args in question. The arguments to this function are self-explanatory
             and will override the defaults of the corresponding options.
@@ -491,9 +491,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
           MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
 
         """
-        verb = self.opts.verbose and (not parallel or self.p_id==0)
         if not self.parsed:
             self.do_parse()
+        verb = self.opts.verbose and (not parallel or self.p_id==0)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
         self.iterframe = 0
@@ -569,7 +569,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     
     def timeseries(self, coords=None, props=None, x=True, y=True, z=True, parallel=True):
         """ Extracts coordinates and/or other time-dependent attributes from a trajectory.
-        'coords' can be an AtomGroup, an int, or a selection text, or a tuple of these. In case of an int, it will be taken as the mdreader index group number to use.
+        'coords' can be an AtomGroup, an int, a selection text, or a tuple of these. In case of an int, it will be taken as the mdreader index group number to use.
         'props' must be a str or a tuple of str, which will be used as attributes to extract from the trajectory's timesteps. These must be valid attributes of the mdreader.trajectory.ts class, and cannot be bound functions or reserved '__...__' attributes.
         Will return a mdreader.Timeseries object, holding an array, or a tuple, for each coords, and having named properties holding the same-named time-arrays. If both coords and props are are None the default is to return the time-coordinates array for the entire set of atoms.
         'props' attributes should be set in quotes, ommitting the object's name.
@@ -583,13 +583,13 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         2. Equivalent to above:
         mdreader.timeseries(mdreader.atoms)
 
-        3. Timeseries with a tuple of two selections time-coordinates:
+        3. Timeseries with a tuple of two selections time-coordinates (the NC3 atoms, and the fifth chosen group from the index):
         mdreader.timeseries(("name NC3", 4))
 
-        4. Timeseries with an array of box time-coordinates (accessible as mdreader.Timeseries._unitcell):
-        mdreader.timeseries(props='_unitcell')
+        4. Timeseries with an array of box time-coordinates:
+        mdreader.timeseries(props='dimensions')
 
-        5. Timeseries with a time-coordinate array correspondig to the x,y components of the second index group, and time-arrays of the system's box and time coordinates.
+        5. Timeseries with a time-coordinate array correspondig to the x,y components of the second index group, and time-arrays of the system's box dimensions and time.
         mdreader.timeseries(coords=1, props=('dimensions', 'time'), z=False)
 
         """
@@ -605,6 +605,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 tjcdx_atgrps = [coords]
             elif type(coords) == types.IntType:
                 tjcdx_atgrps = [self.ndxgs[coords]]
+            elif isinstance(coords, basestring):
+                tjcdx_atgrps = [self.selectAtoms(coords)]
             else:
                 self._tseries._coords_istuple = True
                 try:
@@ -616,7 +618,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                         else:
                             tjcdx_atgrps.append(self.selectAtoms("%s" % atgrp))
                 except:
-                    raise TypeError("Error parsing coordinate groups.")
+                    raise TypeError("Error parsing coordinate groups.\n%r" % sys.exc_info()[1])
 
         # Get the unique list of indices, and the pointers to that list for each requested group.
         indices = [grp.indices() for grp in tjcdx_atgrps]
@@ -628,14 +630,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         mem = self.atoms[self._tseries._tjcdx_ndx].coordinates()[0].nbytes*sum(self._tseries._xyz)
 
         if props is not None:
-            if type(props) == types.StringType:
+            if isinstance(props, basestring):
                 props = [props]
             self._tseries._props = []
+            #validkeys = self.trajectory.ts.__dict__.keys()
             for attr in props:
+                if not hasattr(self.trajectory.ts, attr):
+                    raise AttributeError('Invalid attribute for extraction. It is not an attribute of trajectory.ts')
                 self._tseries._props.append(attr)
-                validkeys = self.trajectory.ts.__dict__.keys()
-                if attr not in validkeys:
-                    raise AttributeError('Invalid attribute for extraction. Available ones (from trajectory.ts.__dict__.keys()) are %r.' % (validkeys))
                 # Rough memory checking
                 mem += sys.getsizeof(getattr(self.trajectory.ts, attr))
                 setattr(self._tseries, attr, None)
@@ -647,7 +649,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
-        if self.p_num is None or not parallel:
+        if self.p_num is None and parallel:
             self.p_num = multiprocessing.cpu_count()
         if self.p_num<2 or not parallel:
             tseries = self._extractor()
@@ -710,13 +712,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 shape = (self.i_totalframes,) + getattr(self.trajectory.ts, attr).shape
             except AttributeError:
                 shape = (self.i_totalframes,)
-            setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
+            try:
+                setattr(self._tseries, attr, numpy.empty(shape, dtype=(getattr(self.trajectory.ts, attr)).dtype))
+            except AttributeError:
+                setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
         if self.i_totalframes:
             for frame in self.iterate(parallel):
                 if self._tseries._cdx is not None:
                     self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,numpy.where(self._tseries._xyz)[0]]
                 for attr in self._tseries._props:
-                    getattr(self._tseries, attr)[self.iterframe] = getattr(self.trajectory.ts, attr)
+                    getattr(self._tseries, attr)[self.iterframe,...] = getattr(self.trajectory.ts, attr)
         return self._tseries
 
     
