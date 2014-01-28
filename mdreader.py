@@ -703,8 +703,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # We need a brand new file descriptor per worker, otherwise we have a nice chaos.
         if parallel:
             self._Universe__trajectory._reopen()
-        if not self.i_parms_set:
-            self._set_iterparms(parallel)
+        # Always reset these, in case of multiple calls for extraction with different parallel flags... (bah...)
+        self._set_iterparms(parallel)
         if len(self._tseries._tjcdx_ndx):
             self._tseries._cdx = numpy.empty((self.i_totalframes, len(self._tseries._tjcdx_ndx), sum(self._tseries._xyz)), dtype=numpy.float32)
         for attr in self._tseries._props:
