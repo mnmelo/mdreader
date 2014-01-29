@@ -54,7 +54,7 @@ def _parallel_extractor(rdr, w_id):
 def concat_tseries(lst, ret=None):
     """ Concatenates a list of Timeseries objects """
     if ret is None:
-        ret = lst.pop(0)
+        ret = lst[0]
     if len(lst[0]._tjcdx_ndx):
         ret._cdx = numpy.concatenate([i._cdx for i in lst])
     for attr in ret._props:
@@ -298,6 +298,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.p_num = None
         self.p_id = 0
         self.p_scale_dt = True
+        self.p_parms_set = False
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
 
@@ -501,10 +502,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self.ndxgs.append(self.atoms[ndx_atids[auto_id][1]])
                 auto_id += 1
 
-    def iterate(self, parallel=False):
+    def iterate(self):
         """ Yields snapshots from the trajectory according to the specified start and end boundaries and skip.
         Calculations on AtomSelections will automagically reflect the new snapshot, without needing to refer to it specifically.
-        The optional argument 'parallel' signals partial iteration in order to parallelize trajectory iteration.
         Output and parallelization will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
           MDreader.progress (default: None) can be one of 'frame', 'pct', 'both', 'empty', or None. It sets the output to frame numbers, %% progress, both, or nothing. If set to None behavior defaults to 'frame', or 'pct' when iterating in parallel block mode.
           MDreader.p_mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
@@ -516,11 +516,11 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
           MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
 
         """
-        self.p_mpi = parallel and self.opts.mpi
-        self.p_smp = parallel and not self.opts.mpi
-        self.parallel = parallel
         if not self.parsed:
             self.do_parse()
+
+        if not self.p_parms_set:
+            self._set_parallel_parms(False) # By default do a serial iteration. _set_parallel_parms should have been set by whichever internal function called iterate() instead.
         verb = self.opts.verbose and (not self.parallel or self.p_id==0)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
@@ -534,10 +534,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         sys.stderr.flush()
 
         if not self.i_parms_set:
-            self._set_iterparms(parallel)
+            self._set_iterparms()
 
         if self.progress is None:
-            if parallel and self.p_mode == "block":
+            if self.parallel and self.p_mode == "block":
                 self.progress = 'pct'
             else:
                 self.progress = 'frame'
@@ -577,7 +577,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     else:
                         etastr = "Will end in %ds." % round(etaseconds)
                     loop_dtime_s = dtime_seconds(self.loop_dtime)
-                    if parallel:
+                    if self.parallel:
                         if self.p_scale_dt:
                             loop_dtime_s /= self.p_num
 
@@ -624,6 +624,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # First things first
         if not self.parsed:
             self.do_parse()
+        if not self.p_parms_set:
+            self._set_parallel_parms(parallel)
+
         self._tseries = Timeseries()
         tjcdx_atgrps = []
         if coords is None and props is None:
@@ -672,21 +675,20 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         mem *= len(self)
 
         # This is potentially a lot of memory. Check it beforehand, except for MPI, which we trust the user to do themselves.
-        if not self.opts.mpi:
+        if not self.p_mpi:
             avail_mem = memoryCheck()
             if 2*mem/(1024**2) > avail_mem.value:
                 raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
-        if self.p_num is None and parallel:
-            self.p_num = multiprocessing.cpu_count()
-        if self.p_num<2 or not parallel or self.opts.mpi:
+
+        if not self.p_smp:
             tseries = self._extractor()
-            if self.opts.mpi:
+            if self.p_mpi:
                 tseries = self.comm.gather(tseries, root=0)
                 if self.p_id == 0:
                     tseries = concat_tseries(tseries)
-                else:
+                elif not self.mpi_keep_workers_alive:
                     sys.exit(0)
         else:
             pool = Pool(processes=self.p_num)
@@ -702,10 +704,20 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         self.p_fn = fn
-        if self.p_num is None or not parallel:
-            self.p_num = multiprocessing.cpu_count()
-        if self.p_num<2 or not parallel:
-            return self._reader()
+        if not self.p_parms_set:
+            self._set_parallel_parms(parallel)
+
+        if not self.p_smp:
+            if not self.p_mpi:
+                return self._reader()
+            else:
+                res = self._reader()
+                res = self.comm.gather(res, root=0)
+                if self.p_id == 0:
+                    return [val for subl in res for val in subl] 
+                elif not self.mpi_keep_workers_alive:
+                    sys.exit(0)
+
         else:
             pool = Pool(processes=self.p_num)
             results = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
@@ -715,34 +727,28 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 linres.extend(res)
             return linres  
 
-    def _reader(self, parallel=False):
+    def _reader(self):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
-        # We need a brand new file descriptor per worker, otherwise we have a nice chaos.
-        if parallel:
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        if self.p_smp:
             self._Universe__trajectory._reopen()
-        if not self.i_parms_set:
-            self._set_iterparms(parallel)
         reslist = []
         if self.i_totalframes:
-            for frame in self.iterate(parallel):
+            for frame in self.iterate():
                 if not self.i_overlap:
                     reslist.append(self.p_fn(self))
         return reslist
 
-    def _extractor(self, parallel=False):
+    def _extractor(self):
         """ Extracts the values asked for in mdreader._tseries. Parallelizable!
 
         """
-        p_mpi = parallel and self.opts.mpi
-        p_smp = parallel and not self.opts.mpi
-        # We need a brand new file descriptor per worker, otherwise we have a nice chaos.
-        if p_smp:
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        if self.p_smp:
             self._Universe__trajectory._reopen()
 
-        if not self.i_parms_set:
-            self._set_iterparms(parallel)
         if len(self._tseries._tjcdx_ndx):
             self._tseries._cdx = numpy.empty((self.i_totalframes, len(self._tseries._tjcdx_ndx), sum(self._tseries._xyz)), dtype=numpy.float32)
         for attr in self._tseries._props:
@@ -755,7 +761,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             except AttributeError:
                 setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
         if self.i_totalframes:
-            for frame in self.iterate(parallel or self.opts.mpi):
+            for frame in self.iterate():
                 if self._tseries._cdx is not None:
                     self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,numpy.where(self._tseries._xyz)[0]]
                 for attr in self._tseries._props:
@@ -763,16 +769,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         return self._tseries
 
     
-    def _set_iterparms(self, parallel):
-        p_mpi = parallel and self.opts.mpi
-        p_smp = parallel and not self.opts.mpi
+    def _set_iterparms(self):
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
-        if parallel:
+        if self.parallel:
             if self.p_num is None:
-                if p_smp:
+                if self.p_smp:
                     self.p_num = multiprocessing.cpu_count()
-                elif p_mpi:
+                elif self.p_mpi:
                     self.p_num = self.comm.Get_size()
             elif self.p_num < 2:
                 raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
@@ -803,5 +807,17 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.i_endframe = self.endframe
         self.i_totalframes = int(math.ceil(float(self.i_endframe-self.i_startframe+1)/self.i_skip))
         self.i_parms_set = True
+        self.p_parms_set = False
 
+
+    def _set_parallel_parms(self, parallel=True):
+        self.p_mpi = parallel and self.opts.mpi
+        self.p_smp = parallel and not self.opts.mpi
+        self.parallel = parallel
+        if self.parallel:
+            if self.p_mpi:
+                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirin -np nprocs
+            elif self.p_smp and p_num is None:
+                self.p_num = multiprocessing.cpu_count()
+        self.p_parms_set = True
 
