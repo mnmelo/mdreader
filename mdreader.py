@@ -36,11 +36,8 @@ def _parallel_launcher(rdr, w_id):
     """ Helper function for the parallel execution of registered functions.
 
     """
-    else:
-        # block seems to be faster.
-        rdr.p_mode = 'block'
-        rdr.p_id = w_id
-        return rdr._reader(parallel=True)
+    rdr.p_id = w_id
+    return rdr._reader()
 
 def _parallel_extractor(rdr, w_id):
     """ Helper function for the parallel extraction of trajectory coordinates/values.
@@ -49,7 +46,7 @@ def _parallel_extractor(rdr, w_id):
     # block seems to be faster.
     rdr.p_mode = 'block'
     rdr.p_id = w_id
-    return rdr._extractor(parallel=True)
+    return rdr._extractor()
 
 def concat_tseries(lst, ret=None):
     """ Concatenates a list of Timeseries objects """
@@ -63,9 +60,9 @@ def concat_tseries(lst, ret=None):
 
 def check_file(fname):
     if not os.path.exists(fname):
-        sys.exit('Error: Can\'t find file %s' % (fname))
+        raise IOError('Can\'t find file %s' % (fname))
     if not os.access(fname, os.R_OK):
-        sys.exit('Error: Permission denied to read file %s' % (fname))
+        raise IOError('Permission denied to read file %s' % (fname))
     return fname
 
 def check_outfile(fname):
@@ -73,12 +70,12 @@ def check_outfile(fname):
     if not dirname:
         dirname = '.'
     if not os.access(dirname, os.W_OK):
-        sys.exit('Error: Permission denied to write file %s' % (fname))
+        raise IOError('Permission denied to write file %s' % (fname))
     return fname
 
 def check_positive(val):
     if val < 0:
-        sys.exit('Error: Argument must be >= 0: %r' % (val))
+        raise ValueError('Argument must be >= 0: %r' % (val))
 
 def xtclen(xtc):
     return(len(xtc))
@@ -298,6 +295,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.p_num = None
         self.p_id = 0
         self.p_scale_dt = True
+        self.p_mpi_keep_workers_alive = False
         self.p_parms_set = False
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
@@ -357,7 +355,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         if self.hasindex:
-            sys.exit("Error: Index can only be set once.")
+            raise AttributeError("Index can only be set once.")
         self.hasindex = True
         self.add_argument('-n', metavar='INDEX', dest='ndx', default=ndxdefault,
                 help = 'file\tIndex file.')
@@ -375,19 +373,33 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         self.opts = self.parse_args(self.arguments)
-        if self.opts.verbose:
+
+        if self.opts.mpi:
+            from mpi4py import MPI
+            self.comm = MPI.COMM_WORLD
+            self.p_id = self.comm.Get_rank()
+            self.p_num = self.comm.Get_size()
+
+        if self.opts.verbose and self.p_id == 0:
             sys.stderr.write("Loading...\n")
         ## Post option handling
         map(check_file,(self.opts.top,self.opts.xtc))
         map(check_outfile,(self.opts.outfile,))
         map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
         if self.opts.endtime < self.opts.starttime:
-            sys.exit('Error: Endtime lower than starttime.')
+            raise ValueError('Endtime lower than starttime.')
         MDAnalysis.Universe.__init__(self, self.opts.top, self.opts.xtc)
 
-        self.nframes = len(self.trajectory)
-        if self.nframes is None or self.nframes < 1:
-            sys.exit('Error: No frames read.')
+        # Trajectory indexing can be slow. No need to do for every MPI worker: we just pass the offsets around.
+        if self.p_id == 0:
+            self.nframes = len(self.trajectory)
+            if self.nframes is None or self.nframes < 1:
+                raise IOError('No frames to be read.')
+        if self.opts.mpi:
+            self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
+            if self.p_id != 0:
+                self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
+                self.nframes = len(self.trajectory._TrjReader__offsets)
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
@@ -411,12 +423,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 raise ValueError("You requested to start at time %f ps but trajectory only goes up to %f ps." % (self.opts.starttime, (self.nframes-1)*self.trajectory.dt))
         self.totalframes = int(math.ceil(float(self.endframe-self.startframe+1)/self.opts.skip))
         #print "startframe: %d, endframe: %d, totalframes: %d" % (self.startframe, self.endframe, self.totalframes)
-
-        if self.opts.mpi:
-            from mpi4py import MPI
-            self.comm = MPI.COMM_WORLD()
-            self.p_id = self.comm.Get_rank()
-            self.p_num = self.comm.Get_size()
 
         self.parsed = True
         if self.p_id == 0:  # Either there is no MPI, or we're root
@@ -594,6 +600,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             yield self.snapshot
             self.iterframe += 1
         self.i_parms_set = False
+        self.p_parms_set = False
     
     def timeseries(self, coords=None, props=None, x=True, y=True, z=True, parallel=True):
         """ Extracts coordinates and/or other time-dependent attributes from a trajectory.
@@ -681,21 +688,22 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
-
         if not self.p_smp:
             tseries = self._extractor()
             if self.p_mpi:
                 tseries = self.comm.gather(tseries, root=0)
                 if self.p_id == 0:
                     tseries = concat_tseries(tseries)
-                elif not self.mpi_keep_workers_alive:
-                    sys.exit(0)
         else:
             pool = Pool(processes=self.p_num)
             concat_tseries(pool.map(_parallel_extractor, [(self, i) for i in range(self.p_num)]), tseries)
-        self._tseries = None
-        tseries.atgrps = tjcdx_atgrps
-        return tseries
+
+        if self.p_mpi and not self.p_mpi_keep_workers_alive and self.p_id != 0:
+            sys.exit(0)
+        else:
+            self._tseries = None
+            tseries.atgrps = tjcdx_atgrps
+            return tseries
 
 
     def do_in_parallel(self, fn, parallel=True):
@@ -715,7 +723,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 res = self.comm.gather(res, root=0)
                 if self.p_id == 0:
                     return [val for subl in res for val in subl] 
-                elif not self.mpi_keep_workers_alive:
+                elif not self.p_mpi_keep_workers_alive:
                     sys.exit(0)
 
         else:
@@ -734,6 +742,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         if self.p_smp:
             self._Universe__trajectory._reopen()
+        if not self.i_parms_set:
+            self._set_iterparms()
+
         reslist = []
         if self.i_totalframes:
             for frame in self.iterate():
@@ -748,6 +759,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         if self.p_smp:
             self._Universe__trajectory._reopen()
+        if not self.i_parms_set:
+            self._set_iterparms()
 
         if len(self._tseries._tjcdx_ndx):
             self._tseries._cdx = numpy.empty((self.i_totalframes, len(self._tseries._tjcdx_ndx), sum(self._tseries._xyz)), dtype=numpy.float32)
@@ -773,12 +786,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
         if self.parallel:
-            if self.p_num is None:
-                if self.p_smp:
-                    self.p_num = multiprocessing.cpu_count()
-                elif self.p_mpi:
-                    self.p_num = self.comm.Get_size()
-            elif self.p_num < 2:
+            if self.p_num < 2:
                 raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
 
             if self.p_mode == "interleaved":
@@ -807,7 +815,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.i_endframe = self.endframe
         self.i_totalframes = int(math.ceil(float(self.i_endframe-self.i_startframe+1)/self.i_skip))
         self.i_parms_set = True
-        self.p_parms_set = False
 
 
     def _set_parallel_parms(self, parallel=True):
@@ -817,7 +824,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if self.parallel:
             if self.p_mpi:
                 self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirin -np nprocs
-            elif self.p_smp and p_num is None:
+            elif self.p_smp and self.p_num is None:
                 self.p_num = multiprocessing.cpu_count()
         self.p_parms_set = True
 
