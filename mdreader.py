@@ -289,6 +289,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.outstats = outstats
         self.statavg = statavg
         # Stuff pertaining to progress output/parallelization
+        self.parallel = False  # Whether to parallelize
+        self.p_smp = False  # SMP parallelization (within the same machine, or virtual machine)
+        self.p_mpi = False  # MPI parallelization
         self.progress = None
         self.p_mode = 'block'
         self.p_overlap = 0
@@ -325,7 +328,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
         self.add_argument('-mpi',  action='store_true', dest='mpi',
-                help = 'bool\tWhether to use mpi for parallelization (only relevant if the script already uses mdreader to paralleliz).')
+                help = 'bool\tWhether to use mpi for parallelization (only relevant if the script already tells mdreader to parallelize).')
         self.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if ver:
@@ -513,9 +516,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
           MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
 
         """
+        self.p_mpi = parallel and self.opts.mpi
+        self.p_smp = parallel and not self.opts.mpi
+        self.parallel = parallel
         if not self.parsed:
             self.do_parse()
-        verb = self.opts.verbose and (not parallel or self.p_id==0)
+        verb = self.opts.verbose and (not self.parallel or self.p_id==0)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
         self.iterframe = 0
@@ -729,9 +735,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """ Extracts the values asked for in mdreader._tseries. Parallelizable!
 
         """
+        p_mpi = parallel and self.opts.mpi
+        p_smp = parallel and not self.opts.mpi
         # We need a brand new file descriptor per worker, otherwise we have a nice chaos.
-        if parallel:
+        if p_smp:
             self._Universe__trajectory._reopen()
+
         if not self.i_parms_set:
             self._set_iterparms(parallel)
         if len(self._tseries._tjcdx_ndx):
@@ -755,11 +764,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
     
     def _set_iterparms(self, parallel):
+        p_mpi = parallel and self.opts.mpi
+        p_smp = parallel and not self.opts.mpi
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
         if parallel:
             if self.p_num is None:
-                self.p_num = multiprocessing.cpu_count()
+                if p_smp:
+                    self.p_num = multiprocessing.cpu_count()
+                elif p_mpi:
+                    self.p_num = self.comm.Get_size()
             elif self.p_num < 2:
                 raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
 
