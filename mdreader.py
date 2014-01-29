@@ -787,7 +787,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # defined a group of i_ variables just for that.
         if self.parallel:
             if self.p_num < 2:
-                raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
+                raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work. \
+Perhaps you're using MPI but forgot to run this script with mpirun or similar?")
 
             if self.p_mode == "interleaved":
                 frames_per_worker = numpy.ones(self.p_num,dtype=numpy.int)*(self.totalframes/self.p_num)
