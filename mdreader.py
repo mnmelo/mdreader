@@ -300,6 +300,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
 
+        # Check whether we're running under MPI. Not failsafe, but the user should know better than to fudge with these env vars.
+        mpivarlst = ['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_MCA_ns_nds_vpid',
+                     'PMI_ID', 'SLURM_PROCID', 'LAMRANK', 'MPI_RANKID',
+                     'MP_CHILD', 'MP_RANK', 'MPIRUN_RANK']
+        self.mpi = bool(sum([var in os.environ.keys() for var in mpivarlst]))
+
     # The overridable function for parallel processing.
     def p_fn(self):
         pass
@@ -326,8 +332,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'bool\tWhether to interpret -b and -e as frame numbers.')
         self.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
-        self.add_argument('-mpi',  action='store_true', dest='mpi',
-                help = 'bool\tWhether to use mpi for parallelization (only relevant if the script already tells mdreader to parallelize).')
         self.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if ver:
@@ -374,7 +378,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """
         self.opts = self.parse_args(self.arguments)
 
-        if self.opts.mpi:
+        if self.mpi:
             from mpi4py import MPI
             self.comm = MPI.COMM_WORLD
             self.p_id = self.comm.Get_rank()
@@ -395,7 +399,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.nframes = len(self.trajectory)
             if self.nframes is None or self.nframes < 1:
                 raise IOError('No frames to be read.')
-        if self.opts.mpi:
+        if self.mpi:
             self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
             if self.p_id != 0:
                 self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
@@ -429,7 +433,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if self.hasindex:
                 self._parse_ndx()
 
-        if self.opts.mpi:   # Get ready to broadcast the index list
+        if self.mpi:   # Get ready to broadcast the index list
             if self.p_id == 0:
                 tmp_ndx = [grp.indices() for grp in self.ndxgs]
             else:
@@ -786,9 +790,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
         if self.parallel:
-            if self.p_num < 2:
-                raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work. \
-Perhaps you're using MPI but forgot to run this script with mpirun or similar?")
+            if self.p_num < 2 and self.p_smp:
+                raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
 
             if self.p_mode == "interleaved":
                 frames_per_worker = numpy.ones(self.p_num,dtype=numpy.int)*(self.totalframes/self.p_num)
@@ -819,8 +822,8 @@ Perhaps you're using MPI but forgot to run this script with mpirun or similar?")
 
 
     def _set_parallel_parms(self, parallel=True):
-        self.p_mpi = parallel and self.opts.mpi
-        self.p_smp = parallel and not self.opts.mpi
+        self.p_mpi = parallel and self.mpi
+        self.p_smp = parallel and not self.mpi
         self.parallel = parallel
         if self.parallel:
             if self.p_mpi:
