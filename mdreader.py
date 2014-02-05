@@ -338,7 +338,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
                 help = 'Prints the script version and exits.')
 
-    def add_ndx(self, ng=1, ndxparms=[], ndxdefault='index.ndx', ngdefault=1, smartindex=True):
+    def add_ndx(self, ng=1, ndxparms=[], ndxdefault=None, ngdefault=1, smartindex=True):
         """ Adds an index read to the MDreader. A -n option will be added.
         ng controls how many groups to ask for.
         If ng is set to 'n' a -ng option will be added, which will then control how many groups to ask for.
@@ -346,7 +346,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         To allow for one or more reference groups plus n analysis groups, ndxparms will be interpreted differently according to ng and the -ng option:
             If ng is "n" it will be set to the number of groups specified by option -ng plus the number of ndxparms elements before the last.
             If ng is greater than the number of elements in ndxparms, then the last element will be repeated to fulfill ng. If ndxparms is greater, all its elements will be used and ng ignored.
-        ndxdefault and ngdefault set the defaults for the -n and -ng options ('index.ndx' and 1, respectively).
+        ndxdefault and ngdefault set the defaults for the -n and -ng options (None and 1, respectively). Note that with the index file set to None mdreader defaults to getting group info from the system residue names.
         smartindex controls smart behavior, by which an index with a number of groups equal to n is taken as is without prompting. You'll want to disble it when it makes sense to pick the same index group multiple times.
 
         Example:
@@ -444,22 +444,28 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self.ndxgs = [self.atoms[ndx] for ndx in tmp_ndx]
 
     def _parse_ndx(self):
-        with open(self.opts.ndx) as NDX:
-            tmpstr=""
+        if self.opts.ndx is not None:
             ndx_atids=[]
+            tmpstr=""
             ndxheader=None
-            while True:
-                line = NDX.readline()
-                mtx = re.match('\s*\[\s*(\S+)\s*\]\s*',line)
-                if mtx or not line:
-                    if ndxheader is not None:
-                        ndx_atids.append((ndxheader, numpy.array(tmpstr.split(), dtype=int)-1))
-                        tmpstr = ""
-                    if not line:
-                        break
-                    ndxheader = mtx.groups()[0]
-                else:
-                    tmpstr += line
+            with open(self.opts.ndx) as NDX:
+                while True:
+                    line = NDX.readline()
+                    mtx = re.match('\s*\[\s*(\S+)\s*\]\s*',line)
+                    if mtx or not line:
+                        if ndxheader is not None:
+                            ndx_atids.append((ndxheader, numpy.array(tmpstr.split(), dtype=int)-1))
+                            tmpstr = ""
+                        if not line:
+                            break
+                        ndxheader = mtx.groups()[0]
+                    else:
+                        tmpstr += line
+        else:
+            resnames = numpy.unique(self.atoms.resnames())
+            ndx_atids = [ (rn, self.selectAtoms("resname %s" % (rn,)).indices()) for rn in resnames ]
+            ndx_atids.insert(0,("System", self.atoms.indices()))
+
 
         # How many groups to auto assign (it may be useful to have the same group as a reference and as an analysis group, so we check it a bit more thoroughly).
         if self.ng == "n":
