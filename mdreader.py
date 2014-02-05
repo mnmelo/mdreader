@@ -313,16 +313,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def __len__(self):
         return self.totalframes
 
-    def setargs(self, traj='traj.xtc', gro='topol.tpr', out='data.xvg', b=0, e=float('inf'), skip=1, v=1, ver=None):
+    def setargs(self, f='traj.xtc', s='topol.tpr', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, version=None):
         """ This function allows the modification of the default parameters of the default arguments without having
             to go through the hassle of overriding the args in question. The arguments to this function are self-explanatory
             and will override the defaults of the corresponding options.
         """
-        self.add_argument('-f', metavar='TRAJ', dest='xtc', default=traj,
+        self.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
                 help = 'file\tThe trajectory to analyze.')
-        self.add_argument('-s', metavar='TOPOL', dest='top', default=gro,
+        self.add_argument('-s', metavar='TOPOL', dest='top', default=s,
                 help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
-        self.add_argument('-o', metavar='OUT', dest='outfile', default=out,
+        self.add_argument('-o', metavar='OUT', dest='outfile', default=o,
                 help = 'file\tThe main data output file.')
         self.add_argument('-b', metavar='TIME', type=float, dest='starttime', default=b,
                 help = 'real\tTime to begin analysis from.')
@@ -334,7 +334,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'int \tNumber of frames to skip when analyzing.')
         self.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
-        if ver:
+        if version is not None:
             self.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
                 help = 'Prints the script version and exits.')
 
