@@ -14,7 +14,7 @@ Iteration is done only as coordinates/dimensions extraction.
 md = mdreader.MDreader()
 
 # Let's add the slice selection properly
-md.add_argument("-bw", dest="bw",type=float, help="Bin width")
+md.add_argument("-bw", dest="bw",type=float,default=0.1,help="Bin width")
 md.add_argument("-prec", dest="prec",type=int,default=2,help="Trajectory precision (number of decimal places)")
 md.add_argument("-oplot", dest="oplot",default="dens",help="Output plots filename (no extension)")
 md.add_ndx(ng='n')
