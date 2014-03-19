@@ -716,14 +716,18 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return tseries
 
 
-    def do_in_parallel(self, fn, parallel=True):
+    def do_in_parallel(self, fn, parallel=True, shape=None, dtype=None):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order. parallel can be set to false to force serial behavior.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
+        If the shapes argument is passed, then an integer, or a tuple, with the dimension(s) of the result is expected, and the final result will be presented as a numpy array of shape (numframes,shape). This
+        also allows for memory sharing, speeding up the collection of parallel results. Just make sure that fn returns consistently the same shape of results.
+        If multiple values are output by fn, shape can be a tuple of shape tuples, with as many elelments as expected results.
+        dtype allows for customization of the result array type. Leave blank for your numpy's default.
+
         """
         self.p_fn = fn
-        if not self.p_parms_set:
-            self._set_parallel_parms(parallel)
+        self._set_parallel_parms(parallel, shape, dtype)
 
         if not self.p_smp:
             if not self.p_mpi:
@@ -827,14 +831,33 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.i_parms_set = True
 
 
-    def _set_parallel_parms(self, parallel=True):
+    def _set_parallel_parms(self, parallel=True, shape=None, dtype=None):
         self.p_mpi = parallel and self.mpi
         self.p_smp = parallel and not self.mpi
         self.parallel = parallel
         if self.parallel:
             if self.p_mpi:
-                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirin -np nprocs
+                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirun -np nprocs
             elif self.p_smp and self.p_num is None:
                 self.p_num = multiprocessing.cpu_count()
+
+        # Shared memory stuff
+        self.p_result = None
+        if shape is not None:
+            if type(shape) == int:
+                shape = ((shape,),)
+            elif type(shape[0]) == int:
+                shape = (tuple(shape),)
+
+        try:
+            len(dtype)
+        except TypeError:
+            dtype = (dtype,)*len(shape)
+
+        if len(dtype) != len(shape):
+            raise ValueError("The number of passed dtype values (%d) doesn't match the number of requested result arrays (%d)." % (len(dtypes), len(shape)))
+
+
+
         self.p_parms_set = True
 
