@@ -433,12 +433,11 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if self.hasindex:
                 self._parse_ndx()
 
-        if self.mpi:   # Get ready to broadcast the index list
+        if self.mpi and self.hasindex:   # Get ready to broadcast the index list
             if self.p_id == 0:
                 tmp_ndx = [grp.indices() for grp in self.ndxgs]
             else:
-                if self.hasindex:
-                    tmp_ndx = None
+                tmp_ndx = None
             tmp_ndx = self.comm.bcast(tmp_ndx, root=0)
             if self.p_id != 0:
                 self.ndxgs = [self.atoms[ndx] for ndx in tmp_ndx]
