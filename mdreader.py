@@ -270,14 +270,19 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
     where %prog% is the 'prog' argument as supplied during initialization, or sys.argv[0] if none is provided.
     
-    After MDreader instantiation the values of the defaults to the arguments can be changed using MDreader.setargs() (see function documentation). If a 'ver' argument is passed to setargs it will be displayed as the program version, and a '-V'/'--version' option for that purpose will be automatically created.
+    After MDreader instantiation the values of the defaults to the arguments can be changed using MDreader.setargs() (also for setting/unsetting automatic file IO checking; see function documentation). If a 'ver' argument is passed to setargs it will be displayed as the program version, and a '-V'/'--version' option for that purpose will be automatically created.
     The arguments for an MDreader instance can also be added or overridden using the add_argument() method (see the argparse documentation).
     Finally, the iterate() method will iterate over the trajectory according to the supplied options, yielding frames as it goes. You'll probably want to use it as part of a for-loop header.
     
     """
 
-    def __init__(self, arguments=sys.argv[1:], conflict_handler='resolve', formatter_class=ProperFormatter, outstats=1, statavg=100, *args, **kwargs):
-        argparse.ArgumentParser.__init__(self, *args, conflict_handler=conflict_handler, formatter_class=formatter_class, **kwargs)
+    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, *args, **kwargs):
+        # Set these, unless the user has requested them specifically.
+        if len(args) < 10:
+            kwargs["conflict_handler"] = kwargs.get("conflict_handler",'resolve') 
+        if len(args) < 6:
+            kwargs["formatter_class"] = kwargs.get("formatter_class",ProperFormatter) 
+        argparse.ArgumentParser.__init__(self, *args, **kwargs)
         self.arguments = arguments
         self.setargs()
         self.parsed = False
@@ -299,6 +304,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.p_parms_set = False
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
+        self.check_files = True # Whether to check for readability and writability of input and output files.
 
         # Check whether we're running under MPI. Not failsafe, but the user should know better than to fudge with these env vars.
         mpivarlst = ['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_MCA_ns_nds_vpid',
@@ -313,10 +319,11 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def __len__(self):
         return self.totalframes
 
-    def setargs(self, f='traj.xtc', s='topol.tpr', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, version=None):
+    def setargs(self, f='traj.xtc', s='topol.tpr', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, version=None, check_files=None):
         """ This function allows the modification of the default parameters of the default arguments without having
-            to go through the hassle of overriding the args in question. The arguments to this function are self-explanatory
+            to go through the hassle of overriding the args in question. Besides check_files (see below) the arguments to this function are self-explanatory
             and will override the defaults of the corresponding options.
+            check_files (also accessible via MDreader_obj.check_files) controls whether checks are performed on the readability and writabilty of the input/output files defined here (default behavior is to check).
         """
         self.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
                 help = 'file\tThe trajectory to analyze.')
@@ -337,6 +344,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if version is not None:
             self.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
                 help = 'Prints the script version and exits.')
+        if check_files is not None:
+            self.check_files = check_files
 
     def add_ndx(self, ng=1, ndxparms=[], ndxdefault=None, ngdefault=1, smartindex=True):
         """ Adds an index read to the MDreader. A -n option will be added.
@@ -387,9 +396,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if self.opts.verbose and self.p_id == 0:
             sys.stderr.write("Loading...\n")
         ## Post option handling
-        map(check_file,(self.opts.top,self.opts.xtc))
-        map(check_outfile,(self.opts.outfile,))
-        map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
+        if self.check_files:
+            map(check_file,(self.opts.top,self.opts.xtc))
+            map(check_outfile,(self.opts.outfile,))
+            map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
         if self.opts.endtime < self.opts.starttime:
             raise ValueError('Endtime lower than starttime.')
         MDAnalysis.Universe.__init__(self, self.opts.top, self.opts.xtc)
