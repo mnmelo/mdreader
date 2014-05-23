@@ -410,14 +410,17 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if self.nframes is None or self.nframes < 1:
                 raise IOError('No frames to be read.')
         if self.mpi:
-            self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
-            if self.p_id != 0:
-                self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
-                self.nframes = len(self.trajectory._TrjReader__offsets)
+            if hasattr(self.trajectory, "_TrjReader__offsets"):
+                self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
+                if self.p_id != 0:
+                    self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
+                    self.nframes = len(self.trajectory._TrjReader__offsets)
+            else:
+                self.nframes = len(self.trajectory)
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
-            if not self.opts.asframenum:
+            if not self.opts.asframenum and not self.p_id:
                 sys.stderr.write("Trajectory has no time information. Will interpret limits as frame numbers.\n")
             self.hastime = False
             self.opts.asframenum = True
@@ -499,20 +502,20 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             autondx = otherng
 
         # Check for interactivity, otherwise just eat it from stdin
+        self.stdin = []
         if sys.stdin.isatty():
+            self.interactive = True
             maxlen = str(max(map(len, zip(*ndx_atids)[0])))
             maxidlen = str(len(str(len(ndx_atids)-1)))
             maxlenlen = str(max(map(len, (map(str, (map(len, zip(*ndx_atids)[1])))))))
             for id, hd in enumerate(ndx_atids):
                 sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (id, hd[0], len(hd[1])))
             sys.stderr.write("\n")
-            self.stdin = None
-            def getinputline(dum):
-                return raw_input()
         else:
-            self.stdin = "".join(sys.stdin.readlines()).split()
-            def getinputline(inp):
-                return inp.pop(0)
+            self.interactive = False
+            import select
+            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
+                self.stdin = map(int,"".join(sys.stdin.readlines()).split())
 
         self.ndxgs=[]
         auto_id = 0       # for auto assignment of group ids
@@ -520,7 +523,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if gid < refng or not autondx:
                 if self.stdin is None:
                     sys.stderr.write("%s:\n" % (ndxstr))
-                self.ndxgs.append(self.atoms[ndx_atids[int(getinputline(self.stdin))][1]])
+                self.ndxgs.append(self.atoms[ndx_atids[self._getinputline()][1]])
             else:
                 if gid == refng:
                     sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(ndx_atids))
@@ -584,38 +587,39 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         # The LOOP!
         for self.snapshot in self.trajectory[self.i_startframe:self.i_endframe+1:self.i_skip]:
-            if self.iterframe >= self.p_overlap:
+            if self.i_overlap and self.iterframe >= self.p_overlap:
                 self.i_overlap = False # Done overlapping. Let the output begin!
             if verb:
                 self.loop_time.update(datetime.datetime.now())
-                self.loop_dtime = self.loop_time.new - self.loop_time.old
-                self.loop_dtimes[self.iterframe % self.statavg] = self.loop_dtime
-                # Output stats every outstats step or at the last frame.
-                if (not self.snapshot.frame % self.outstats) or self.iterframe == self.i_totalframes-1:
-                    avgframes = min(self.iterframe+1,self.statavg)
-                    self.loop_sumtime = numpy.sum(self.loop_dtimes[:avgframes])
-                    # No float*dt multiplication before python 3. Let's scale the comparing seconds and do set the dt ourselves.
-                    etaseconds = dtime_seconds(self.loop_sumtime)*float(self.i_totalframes-self.iterframe)/avgframes
-                    eta = datetime.timedelta(seconds=etaseconds)
-                    if etaseconds > 300:
-                        etastr = (datetime.datetime.now()+eta).strftime("Will end %Y-%m-%d at %H:%M:%S.")
-                    else:
-                        etastr = "Will end in %ds." % round(etaseconds)
-                    loop_dtime_s = dtime_seconds(self.loop_dtime)
-                    if self.parallel:
-                        if self.p_scale_dt:
-                            loop_dtime_s /= self.p_num
+                if self.iterframe: # No point in calculating delta times on iterframe 0
+                    self.loop_dtime = self.loop_time.new - self.loop_time.old
+                    self.loop_dtimes[(self.iterframe-1) % self.statavg] = self.loop_dtime
+                    # Output stats every outstats step or at the last frame.
+                    if (not self.snapshot.frame % self.outstats) or self.iterframe == self.i_totalframes-1:
+                        avgframes = min(self.iterframe,self.statavg)
+                        self.loop_sumtime = numpy.sum(self.loop_dtimes[:avgframes])
+                        # No float*dt multiplication before python 3. Let's scale the comparing seconds and set the dt ourselves.
+                        etaseconds = dtime_seconds(self.loop_sumtime)*float(self.i_totalframes-self.iterframe)/avgframes
+                        eta = datetime.timedelta(seconds=etaseconds)
+                        if etaseconds > 300:
+                            etastr = (datetime.datetime.now()+eta).strftime("Will end %Y-%m-%d at %H:%M:%S.")
+                        else:
+                            etastr = "Will end in %ds." % round(etaseconds)
+                        loop_dtime_s = dtime_seconds(self.loop_dtime)
+                        if self.parallel:
+                            if self.p_scale_dt:
+                                loop_dtime_s /= self.p_num
 
-                    if self.hastime:
-                        progstr = framestr.format(self.snapshot.frame-1, float(self.iterframe+1)/(self.i_totalframes), self.snapshot.time)
-                    else:
-                        progstr = framestr.format(self.snapshot.frame-1, float(self.iterframe+1)/(self.i_totalframes))
+                        if self.hastime:
+                            progstr = framestr.format(self.snapshot.frame-1, float(self.iterframe+1)/(self.i_totalframes), self.snapshot.time)
+                        else:
+                            progstr = framestr.format(self.snapshot.frame-1, float(self.iterframe+1)/(self.i_totalframes))
 
-                    sys.stderr.write("\033[K%s(%.4f s/frame) \t%s\r" % (progstr, loop_dtime_s, etastr))
-                    if self.iterframe == self.i_totalframes-1: 
-                        #Last frame. Clean up.
-                        sys.stderr.write("\n")
-                    sys.stderr.flush()
+                        sys.stderr.write("\033[K%s(%.4f s/frame) \t%s\r" % (progstr, loop_dtime_s, etastr))
+                        if self.iterframe == self.i_totalframes-1: 
+                            #Last frame. Clean up.
+                            sys.stderr.write("\n")
+                        sys.stderr.flush()
             yield self.snapshot
             self.iterframe += 1
         self.i_parms_set = False
@@ -760,7 +764,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         if self.p_smp:
-            self._Universe__trajectory._reopen()
+            # XTC/TRR reader has this method, but not all...
+            if hasattr(self._Universe__trajectory, "_reopen"):
+                self._Universe__trajectory._reopen()
+            elif hasattr(self._Universe__trajectory, "dcdfile"):
+                self._Universe__trajectory.dcdfile.close()
+                self._Universe__trajectory.dcdfile = open(self._Universe__trajectory.dcdfilename, 'rb')
+            else:
+                raise AttributeError("Don't know how to get a new file descriptor for this trajectory reader.")
         if not self.i_parms_set:
             self._set_iterparms()
 
@@ -842,8 +853,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.parallel = parallel
         if self.parallel:
             if self.p_mpi:
-                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirin -np nprocs
+                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirun -np nprocs
             elif self.p_smp and self.p_num is None:
                 self.p_num = multiprocessing.cpu_count()
         self.p_parms_set = True
 
+    def _getinputline(self):
+        while True:
+            if self.stdin:
+                return self.stdin.pop(0)
+            elif self.interactive:
+                self.stdin.extend(map(int,raw_input().split()))
+            else:
+                raise IndexError("\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
