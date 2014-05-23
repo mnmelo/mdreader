@@ -762,9 +762,17 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
-        if self.p_smp:
-            # XTC/TRR reader has this method, but not all...
+        reslist = []
+        if not self.i_parms_set:
+            self._set_iterparms()
+        if self.i_unemployed: # This little piggy stayed home
+            self.i_parms_set = False
+            self.p_parms_set = False
+            return reslist
+
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos (worker 0 is exempt).
+        if self.p_smp and self.p_id:
+            # XTC/TRR reader has this method, but not all formats...
             if hasattr(self._Universe__trajectory, "_reopen"):
                 self._Universe__trajectory._reopen()
             elif hasattr(self._Universe__trajectory, "dcdfile"):
@@ -772,14 +780,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self._Universe__trajectory.dcdfile = open(self._Universe__trajectory.dcdfilename, 'rb')
             else:
                 raise AttributeError("Don't know how to get a new file descriptor for this trajectory reader.")
-        if not self.i_parms_set:
-            self._set_iterparms()
 
-        reslist = []
-        if self.i_totalframes:
-            for frame in self.iterate():
-                if not self.i_overlap:
-                    reslist.append(self.p_fn(self))
+        for frame in self.iterate():
+            if not self.i_overlap:
+                reslist.append(self.p_fn(self))
         return reslist
 
     def _extractor(self):
@@ -815,6 +819,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def _set_iterparms(self):
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
+        self.i_unemployed = False
         if self.parallel:
             if self.p_num < 2 and self.p_smp:
                 raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
@@ -829,7 +834,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 # As-even-as-possible distribution of frames per workers, allowing the first one to work more to compensate the lack of overlap.
                 frames_per_worker = numpy.ones(self.p_num,dtype=numpy.int)*((self.totalframes-self.p_overlap)/self.p_num)
                 frames_per_worker[:(self.totalframes-self.p_overlap)%self.p_num] += 1 
-                # Let's check the overlap for zero work
                 frames_per_worker[0] += self.p_overlap # Add extra overlap frames to the first worker.
                 self.i_skip = self.opts.skip
                 self.i_startframe = self.startframe + int(numpy.sum(frames_per_worker[:self.p_id]))*self.i_skip
@@ -839,6 +843,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     self.i_startframe -= self.p_overlap*self.i_skip
             else:
                 raise ValueError("Unrecognized p_mode \"%r\"" % (self.p_mode))
+            # Let's check for zero work
+            if not frames_per_worker[self.p_id]:
+                self.i_unemployed = True
         else:
             self.i_skip = self.opts.skip
             self.i_startframe = self.startframe
