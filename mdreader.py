@@ -112,7 +112,7 @@ class Pool():
                 procs.append(multiprocessing.Process(target=self.fcaller, args=((f, arglist.pop(0), num) )))
                 num += 1
                 freeprocs -= 1
-                procs[-1].daemon = True
+                # procs[-1].daemon = True
                 procs[-1].start()
             i, r = self.outqueue.get() # Execution halts here waiting for output after filling the procs.
             result[i] = r
@@ -123,6 +123,8 @@ class Pool():
             i, r = self.outqueue.get()
             result[i] = r
             got += 1
+        for proc in procs:
+            proc.terminate()
         return result
 
     def fcaller(self, f, args, num):
