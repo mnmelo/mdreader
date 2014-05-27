@@ -342,7 +342,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """
         # Slightly hackish way to avoid code duplication
         parser = self if self.internal_argparse else self.opts
-        # MUST always use dest as a kwarg, to satisfy the DummyParser.
+        # Note: MUST always use dest as a kwarg, to satisfy the DummyParser. Anything without 'dest' will be ignored by it (only relevant when the user sets internal_argparse to False)
         parser.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
                 help = 'file\tThe trajectory to analyze.')
         parser.add_argument('-s', metavar='TOPOL', dest='top', default=s,
