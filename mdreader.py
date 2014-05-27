@@ -241,6 +241,13 @@ class Timeseries():
         else:
             return self._cdx
 
+class DummyParser():
+    def __init__(self):
+        pass
+    def add_argument(self, *args, **kwargs):
+        dest = kwargs.get('dest')
+        if dest is not None:
+            self.__dict__[dest] = kwargs.get('default')
 
 # MDreader Class #######################################################
 ########################################################################
@@ -248,8 +255,10 @@ class Timeseries():
 class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     """An object class inheriting from both argparse.ArgumentParser and MDAnalysis.Universe. Should be initialized as for argparse.ArgumentParser, with additional named arguments:
     Argument 'arguments' should be passed the list of command line arguments; it defaults to sys.argv[1:], which is very likely what you'll want.
-    Argument 'outstats' defines how often to output frame statistics. Defaults to 1.
+    Argument 'outstats' defines how often (framewise) to output frame statistics. Defaults to 1.
     Argument 'statavg' defines over how many frames to average statistics. Defaults to 100.
+    Argument 'internal_argparse' lets the user choose whether they want to let MDreader take care of option handling. Defaults to True. If set to False, a set of default filenames and most other options (starttime, endtime, etc.) will be used. Check functions setargs and add_ndx on how to change these defaults, or directly modify the mdreader.opts object attributes.
+
 
     
     Command-line argument list will default to:
@@ -276,14 +285,21 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     
     """
 
-    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, *args, **kwargs):
-        # Set these, unless the user has requested them specifically.
-        if len(args) < 10:
-            kwargs["conflict_handler"] = kwargs.get("conflict_handler",'resolve') 
-        if len(args) < 6:
-            kwargs["formatter_class"] = kwargs.get("formatter_class",ProperFormatter) 
-        argparse.ArgumentParser.__init__(self, *args, **kwargs)
+    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, internal_argparse=True, *args, **kwargs):
         self.arguments = arguments
+        # Some users don't like to have argparse thrown in
+        self.internal_argparse = internal_argparse
+        if internal_argparse:
+            # Set these, unless the user has requested them specifically.
+            if len(args) < 10:
+                kwargs["conflict_handler"] = kwargs.get("conflict_handler",'resolve') 
+            if len(args) < 6:
+                kwargs["formatter_class"] = kwargs.get("formatter_class",ProperFormatter) 
+            argparse.ArgumentParser.__init__(self, *args, **kwargs)
+            self.check_files = True # Whether to check for readability and writability of input and output files.
+        else:
+            self.check_files = False
+            self.opts = DummyParser()
         self.setargs()
         self.parsed = False
         self.hasindex = False
@@ -304,7 +320,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.p_parms_set = False
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
-        self.check_files = True # Whether to check for readability and writability of input and output files.
 
         # Check whether we're running under MPI. Not failsafe, but the user should know better than to fudge with these env vars.
         mpivarlst = ['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_MCA_ns_nds_vpid',
@@ -322,27 +337,30 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def setargs(self, f='traj.xtc', s='topol.tpr', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, version=None, check_files=None):
         """ This function allows the modification of the default parameters of the default arguments without having
             to go through the hassle of overriding the args in question. Besides check_files (see below) the arguments to this function are self-explanatory
-            and will override the defaults of the corresponding options.
+            and will override the defaults of the corresponding options. Thse defaults are taken even when internal_argparse has been set to False.
             check_files (also accessible via MDreader_obj.check_files) controls whether checks are performed on the readability and writabilty of the input/output files defined here (default behavior is to check).
         """
-        self.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
+        # Slightly hackish way to avoid code duplication
+        parser = self if self.internal_argparse else self.opts
+        # MUST always use dest as a kwarg, to satisfy the DummyParser.
+        parser.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
                 help = 'file\tThe trajectory to analyze.')
-        self.add_argument('-s', metavar='TOPOL', dest='top', default=s,
+        parser.add_argument('-s', metavar='TOPOL', dest='top', default=s,
                 help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
-        self.add_argument('-o', metavar='OUT', dest='outfile', default=o,
+        parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
                 help = 'file\tThe main data output file.')
-        self.add_argument('-b', metavar='TIME', type=float, dest='starttime', default=b,
+        parser.add_argument('-b', metavar='TIME', type=float, dest='starttime', default=b,
                 help = 'real\tTime to begin analysis from.')
-        self.add_argument('-e', metavar='TIME', type=float, dest='endtime', default=e,
+        parser.add_argument('-e', metavar='TIME', type=float, dest='endtime', default=e,
                 help = 'real\tTime to end analysis at.')
-        self.add_argument('-fmn',  action='store_true', dest='asframenum',
+        parser.add_argument('-fmn',  action='store_true', dest='asframenum',
                 help = 'bool\tWhether to interpret -b and -e as frame numbers.')
-        self.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
+        parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
-        self.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
+        parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if version is not None:
-            self.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
+            parser.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
                 help = 'Prints the script version and exits.')
         if check_files is not None:
             self.check_files = check_files
@@ -356,7 +374,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             If ng is "n" it will be set to the number of groups specified by option -ng plus the number of ndxparms elements before the last.
             If ng is greater than the number of elements in ndxparms, then the last element will be repeated to fulfill ng. If ndxparms is greater, all its elements will be used and ng ignored.
         ndxdefault and ngdefault set the defaults for the -n and -ng options (None and 1, respectively). Note that with the index file set to None mdreader defaults to getting group info from the system residue names.
-        smartindex controls smart behavior, by which an index with a number of groups equal to n is taken as is without prompting. You'll want to disble it when it makes sense to pick the same index group multiple times.
+        Note: if internal_argparse has been set to False, then ndxdefault directly sets which file to take as the index.
+        smartindex controls smart behavior, by which an index with a number of groups equal to n is taken as is without prompting. You'll want to disble it when it makes sense to pick the same index group multiple times, or when order is important.
 
         Example:
         #Simple index search for a single group. Default message:
@@ -370,10 +389,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if self.hasindex:
             raise AttributeError("Index can only be set once.")
         self.hasindex = True
-        self.add_argument('-n', metavar='INDEX', dest='ndx', default=ndxdefault,
-                help = 'file\tIndex file.')
+        parser = self if self.internal_argparse else self.opts
+        parser.add_argument('-n', metavar='INDEX', dest='ndx', default=ndxdefault,
+              help = 'file\tIndex file.')
+
         self.ng = ng
         if ng == "n":
+            if not self.internal_argparse:
+                raise ValueError("When setting internal_argparse to False you cannot pass 'n' for the 'ng' parameter of add_ndx (as there is no way for the MDreader object to then ask for the number of index groups). Instead, find out how large 'n' is and pass that number to add_ndx.")
             self.add_argument('-ng', metavar='NGROUPS', type=int, dest='ng', default=ngdefault,
                     help = 'file\tNumber of groups for analysis.')
         self.ndxparms = ndxparms
@@ -385,7 +408,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         You'll want to call it manually before iteration if you need to perform some more argument sanity checking outside MDreader, or to prepare for the loop based on the argument values.
 
         """
-        self.opts = self.parse_args(self.arguments)
+        if self.internal_argparse:
+            self.opts = self.parse_args(self.arguments)
 
         if self.mpi:
             from mpi4py import MPI
@@ -521,7 +545,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         auto_id = 0       # for auto assignment of group ids
         for gid, ndxstr in enumerate(self.ndxparms):
             if gid < refng or not autondx:
-                if self.stdin is None:
+                if not self.stdin:
                     sys.stderr.write("%s:\n" % (ndxstr))
                 self.ndxgs.append(self.atoms[ndx_atids[self._getinputline()][1]])
             else:
