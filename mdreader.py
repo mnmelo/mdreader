@@ -772,8 +772,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.p_parms_set = False
             return reslist
 
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos (worker 0 is exempt).
-        if self.p_smp and self.p_id:
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        if self.p_smp:
             # XTC/TRR reader has this method, but not all formats...
             if hasattr(self._Universe__trajectory, "_reopen"):
                 self._Universe__trajectory._reopen()
