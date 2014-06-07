@@ -8,10 +8,10 @@ Iteration is done in parallel, and results must be manually gathered.
 (A future improvement will be the automatic handling of these cases).
 """
 
-md = mdreader.MDreader()
-md.setargs()
+md = mdreader.MDreader(internal_argparse=False)
+md.setargs(s="start.gro")
 # An index will now be expected from the user
-md.add_ndx(ndxparms=["Select cholines", "Select phosphates"]) 
+md.add_ndx(ndxparms=["Select cholines", "Select phosphates"], ndxdefault='index.ndx') 
 md.do_parse()
 
 nbonds = len(md.ndxgs[0])
