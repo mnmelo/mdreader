@@ -796,14 +796,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
-        reslist = []
-        if not self.i_parms_set:
-            self._set_iterparms()
-        if self.i_unemployed: # This little piggy stayed home
-            self.i_parms_set = False
-            self.p_parms_set = False
-            return reslist
-
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         if self.p_smp:
             # XTC/TRR reader has this method, but not all formats...
@@ -814,6 +806,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self._Universe__trajectory.dcdfile = open(self._Universe__trajectory.dcdfilename, 'rb')
             else:
                 raise AttributeError("Don't know how to get a new file descriptor for this trajectory reader.")
+
+        reslist = []
+        if not self.i_parms_set:
+            self._set_iterparms()
+        if self.i_unemployed: # This little piggy stayed home
+            self.i_parms_set = False
+            self.p_parms_set = False
+            return reslist
 
         for frame in self.iterate():
             if not self.i_overlap:
