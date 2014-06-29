@@ -761,12 +761,15 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return tseries
 
 
-    def do_in_parallel(self, fn, parallel=True):
-        """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order. parallel can be set to false to force serial behavior.
+    def do_in_parallel(self, fn, args=(), parallel=True):
+        """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
+        args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
+        parallel can be set to False to force serial behavior.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
         """
         self.p_fn = fn
+        self.p_args = args
         if not self._parsed:
             self.do_parse()
         if not self.p_parms_set:
@@ -810,14 +813,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         reslist = []
         if not self.i_parms_set:
             self._set_iterparms()
-        if self.i_unemployed: # This little piggy stayed home
+        if self.i_unemployed: # This little piggy stays home
             self.i_parms_set = False
             self.p_parms_set = False
             return reslist
 
         for frame in self.iterate():
             if not self.i_overlap:
-                reslist.append(self.p_fn(self))
+                reslist.append(self.p_fn(*self.p_args))
         return reslist
 
     def _extractor(self):
