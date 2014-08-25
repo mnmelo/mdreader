@@ -758,6 +758,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         else:
             self._tseries = None
             tseries.atgrps = tjcdx_atgrps
+            self.p_parms_set = False
             return tseries
 
 
