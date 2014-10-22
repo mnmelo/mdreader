@@ -24,6 +24,9 @@ import math
 import datetime
 import types
 import multiprocessing
+import socket
+import ctypes
+from . import parallelization
 
 
 # Static descriptions ##################################################
@@ -31,22 +34,6 @@ import multiprocessing
 
 # Helper functions #####################################################
 ########################################################################
-
-def _parallel_launcher(rdr, w_id):
-    """ Helper function for the parallel execution of registered functions.
-
-    """
-    rdr.p_id = w_id
-    return rdr._reader()
-
-def _parallel_extractor(rdr, w_id):
-    """ Helper function for the parallel extraction of trajectory coordinates/values.
-
-    """
-    # block seems to be faster.
-    rdr.p_mode = 'block'
-    rdr.p_id = w_id
-    return rdr._extractor()
 
 def concat_tseries(lst, ret=None):
     """ Concatenates a list of Timeseries objects """
@@ -90,46 +77,6 @@ else:
 
 # Helper Classes #######################################################
 ########################################################################
-
-class Pool():
-    """ MDAnalysis and multiprocessing's map don't play along because of pickling. This solution seems to work fine.
-
-    """
-    def __init__(self, processes):
-        self.nprocs = processes
-
-    def map(self, f, argtuple):
-        procs = []
-        nargs = len(argtuple)
-        result = [None]*nargs
-        arglist = list(argtuple)
-        self.outqueue = multiprocessing.Queue()
-        freeprocs = self.nprocs
-        num = 0
-        got = 0
-        while arglist:
-            while arglist and freeprocs:
-                procs.append(multiprocessing.Process(target=self.fcaller, args=((f, arglist.pop(0), num) )))
-                num += 1
-                freeprocs -= 1
-                # procs[-1].daemon = True
-                procs[-1].start()
-            i, r = self.outqueue.get() # Execution halts here waiting for output after filling the procs.
-            result[i] = r
-            got += 1
-            freeprocs += 1
-        # Must wait for remaining procs, otherwise we'll miss their output.
-        while got < nargs:
-            i, r = self.outqueue.get()
-            result[i] = r
-            got += 1
-        for proc in procs:
-            proc.terminate()
-        return result
-
-    def fcaller(self, f, args, num):
-        self.outqueue.put((num, f(*args)))
-
 
 class ProperFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
     """A hackish class to get proper help format from argparse.
@@ -287,7 +234,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     
     """
 
-    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, internal_argparse=True, *args, **kwargs):
+    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, internal_argparse=True, mpi_keep_workers_alive=False, *args, **kwargs):
         self.arguments = arguments
         # Some users don't like to have argparse thrown in
         self.internal_argparse = internal_argparse
@@ -308,30 +255,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self._nframes = None
         self.outstats = outstats
         self.statavg = statavg
-        # Stuff pertaining to progress output/parallelization
-        self.parallel = False  # Whether to parallelize
-        self.p_smp = False  # SMP parallelization (within the same machine, or virtual machine)
-        self.p_mpi = False  # MPI parallelization
-        self.progress = None
-        self.p_mode = 'block'
-        self.p_overlap = 0
-        self.p_num = None
-        self.p_id = 0
-        self.p_scale_dt = True
-        self.p_mpi_keep_workers_alive = False
-        self.p_parms_set = False
         self.i_parms_set = False
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
-
-        # Check whether we're running under MPI. Not failsafe, but the user should know better than to fudge with these env vars.
-        mpivarlst = ['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_MCA_ns_nds_vpid',
-                     'PMI_ID', 'SLURM_PROCID', 'LAMRANK', 'MPI_RANKID',
-                     'MP_CHILD', 'MP_RANK', 'MPIRUN_RANK']
-        self.mpi = bool(sum([var in os.environ.keys() for var in mpivarlst]))
-
-    # The overridable function for parallel processing.
-    def p_fn(self):
-        pass
+        self.progress = None # Progress reporting type
+        self.p = parallelization.Parallel()
 
     def __len__(self):
         return self.totalframes
@@ -356,17 +283,17 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if not self._parsed:
                 self.do_parse()
             # Trajectory indexing can be slow. No need to do for every MPI worker: we just pass the offsets around.
-            if not self.p_id or not self.mpi:
+            if not self.p.mpi or self.p.is_root:
                 self._nframes = len(self.trajectory)
                 if self._nframes is None or self._nframes < 1:
                     raise IOError('No frames to be read.')
-            if self.mpi:
+            if self.p.mpi:
                 if hasattr(self.trajectory, "_TrjReader__offsets"):
                     self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
-                    if self.p_id != 0:
+                    if not self.p.is_root:
                         self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
                         self._nframes = len(self.trajectory._TrjReader__offsets)
-                elif self.p_id:
+                elif not self.p.is_root:
                     self._nframes = len(self.trajectory)
         return self._nframes
 
@@ -449,13 +376,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         else:
             self.opts = self._dummyopts
 
-        if self.mpi:
-            from mpi4py import MPI
-            self.comm = MPI.COMM_WORLD
-            self.p_id = self.comm.Get_rank()
-            self.p_num = self.comm.Get_size()
-
-        if self.opts.verbose and self.p_id == 0:
+        if self.opts.verbose and self.p.is_root:
             sys.stderr.write("Loading...\n")
         ## Post option handling
         if self.check_files:
@@ -468,23 +389,23 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
-            if not self.opts.asframenum and not self.p_id:
+            if not self.opts.asframenum and self.p.is_root:
                 sys.stderr.write("Trajectory has no time information. Will interpret limits as frame numbers.\n")
             self.hastime = False
             self.opts.asframenum = True
 
         self._parsed = True
-        if not self.p_id:  # Either there is no MPI, or we're root
+        if self.p.is_root:  # Either there is no MPI, or we're root
             if self.hasindex:
                 self._parse_ndx()
 
-        if self.mpi and self.hasindex:   # Get ready to broadcast the index list
-            if not self.p_id:
+        if self.p.mpi and self.hasindex:   # Get ready to broadcast the index list
+            if self.p.is_root:
                 tmp_ndx = [grp.indices() for grp in self.ndxgs]
             else:
                 tmp_ndx = None
             tmp_ndx = self.comm.bcast(tmp_ndx, root=0)
-            if self.p_id:
+            if not self.p.is_root:
                 self.ndxgs = [self.atoms[ndx] for ndx in tmp_ndx]
 
     def _parse_ndx(self):
@@ -546,7 +467,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         else:
             self.interactive = False
             import select
-            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
+            if not self.p.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
                 self.stdin = map(int,"".join(sys.stdin.readlines()).split())
 
         self.ndxgs=[]
@@ -567,21 +488,21 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         Calculations on AtomSelections will automagically reflect the new snapshot, without needing to refer to it specifically.
         Output and parallelization will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
           MDreader.progress (default: None) can be one of 'frame', 'pct', 'both', 'empty', or None. It sets the output to frame numbers, %% progress, both, or nothing. If set to None behavior defaults to 'frame', or 'pct' when iterating in parallel block mode.
-          MDreader.p_mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
-          When MDreader.p_mode=='block' MDreader.p_overlap (default: 0) sets how many frames blocks overlap, to allow multi frame analyses (say, an average) to pick up earlier on each block.
-          MDreader.p_num (default: None) controls in how many blocks/segments to divide the iteration (the number of workers; will use all the processing cores if set to None) and MDreader.p_id is the id of the current worker for reading and output purposes (to avoid terminal clobbering only p_id 0 will output). 
+          MDreader.p.mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
+          When MDreader.p.mode=='block' MDreader.p.overlap (default: 0) sets how many frames blocks overlap, to allow multi frame analyses (say, an average) to pick up earlier on each block.
+          MDreader.p.num (default: None) controls in how many blocks/segments to divide the iteration (the number of workers; will use all the processing cores if set to None) and MDreader.p.id is the id of the current worker for reading and output purposes (to avoid terminal clobbering only p.id 0 will output). 
             **
-            If messing with worker numbers (why would you do that?) beware to always set a different p_id per worker when iterating in parallel, otherwise you'll end up with repeated trajectory chunks.
+            If messing with worker numbers (why would you do that?) beware to always set a different p.id per worker when iterating in parallel, otherwise you'll end up with repeated trajectory chunks.
             **
-          MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
+          MDreader.p.scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
 
         """
         if not self._parsed:
             self.do_parse()
 
-        if not self.p_parms_set:
-            self._set_parallel_parms(False) # By default do a serial iteration. _set_parallel_parms should have been set by whichever internal function called iterate() instead.
-        verb = self.opts.verbose and (not self.parallel or self.p_id==0)
+        if not self.p.parms_set:
+            self.p._set_parallel_parms(False) # By default do a serial iteration. _set_parallel_parms should have been set by whichever internal function called iterate() instead.
+        verb = self.opts.verbose and (not self.p.parallel or self.p.is_root)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
         self.iterframe = 0
@@ -597,7 +518,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self._set_iterparms()
 
         if self.progress is None:
-            if self.parallel and self.p_mode == "block":
+            if self.p.parallel and self.p.mode == "block":
                 self.progress = 'pct'
             else:
                 self.progress = 'frame'
@@ -619,7 +540,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         # The LOOP!
         for self.snapshot in self.trajectory[self.i_startframe:self.i_endframe+1:self.i_skip]:
-            if self.i_overlap and self.iterframe >= self.p_overlap:
+            if self.i_overlap and self.iterframe >= self.p.overlap:
                 self.i_overlap = False # Done overlapping. Let the output begin!
             if verb:
                 self.loop_time.update(datetime.datetime.now())
@@ -638,9 +559,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                         else:
                             etastr = "Will end in %ds." % round(etaseconds)
                         loop_dtime_s = dtime_seconds(self.loop_dtime)
-                        if self.parallel:
-                            if self.p_scale_dt:
-                                loop_dtime_s /= self.p_num
+                        if self.p.parallel:
+                            if self.p.scale_dt:
+                                loop_dtime_s /= self.p.num
 
                         if self.hastime:
                             progstr = framestr.format(self.snapshot.frame-1, float(self.iterframe+1)/(self.i_totalframes), self.snapshot.time)
@@ -655,7 +576,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             yield self.snapshot
             self.iterframe += 1
         self.i_parms_set = False
-        self.p_parms_set = False
+        self.p.parms_set = False
     
     def timeseries(self, coords=None, props=None, x=True, y=True, z=True, parallel=True):
         """ Extracts coordinates and/or other time-dependent attributes from a trajectory.
@@ -686,8 +607,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # First things first
         if not self._parsed:
             self.do_parse()
-        if not self.p_parms_set:
-            self._set_parallel_parms(parallel)
+        if not self.p.parms_set:
+            self.p._set_parallel_parms(parallel)
 
         self._tseries = Timeseries()
         tjcdx_atgrps = []
@@ -737,59 +658,58 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         mem *= len(self)
 
         # This is potentially a lot of memory. Check it beforehand, except for MPI, which we trust the user to do themselves.
-        if not self.p_mpi:
+        if not self.p.p_mpi:
             avail_mem = memoryCheck()
             if 2*mem/(1024**2) > avail_mem.value:
                 raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
-        if not self.p_smp:
+        if not self.p.smp:
             tseries = self._extractor()
-            if self.p_mpi:
+            if self.p.p_mpi:
                 tseries = self.comm.gather(tseries, root=0)
-                if self.p_id == 0:
+                if self.p.is_root:
                     tseries = concat_tseries(tseries)
         else:
-            pool = Pool(processes=self.p_num)
-            concat_tseries(pool.map(_parallel_extractor, [(self, i) for i in range(self.p_num)]), tseries)
+            pool = parallelization.Pool(processes=self.p.num)
+            concat_tseries(pool.map(parallelization._parallel_extractor, [(self, i) for i in range(self.p.num)]), tseries)
 
-        if self.p_mpi and not self.p_mpi_keep_workers_alive and self.p_id != 0:
+        if self.p.p_mpi and not self.p.mpi_keep_workers_alive and not self.p.is_root:
             sys.exit(0)
         else:
             self._tseries = None
             tseries.atgrps = tjcdx_atgrps
-            self.p_parms_set = False
+            self.p.parms_set = False
             return tseries
 
 
-    def do_in_parallel(self, fn, args=(), parallel=True):
+    def do(self, fn, args=(), parallel=True):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
         args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
         parallel can be set to False to force serial behavior.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
         """
-        self.p_fn = fn
-        self.p_args = args
+        self.p.p_fn = fn
+        self.p.args = args
         if not self._parsed:
             self.do_parse()
-        if not self.p_parms_set:
-            self._set_parallel_parms(parallel)
+        if not self.p.parms_set:
+            self.p._set_parallel_parms(parallel)
 
-        if not self.p_smp:
-            if not self.p_mpi:
+        if not self.p.smp:
+            if not self.p.p_mpi:
                 return self._reader()
             else:
                 res = self._reader()
                 res = self.comm.gather(res, root=0)
-                if self.p_id == 0:
+                if self.p.is_root:
                     return [val for subl in res for val in subl] 
-                elif not self.p_mpi_keep_workers_alive:
+                elif not self.p.mpi_keep_workers_alive:
                     sys.exit(0)
-
         else:
-            pool = Pool(processes=self.p_num)
-            results = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
+            pool = parallelization.Pool(processes=self.p.num)
+            results = pool.map(parallelization._parallel_launcher, [(self, i) for i in range(self.p.num)]) 
             # 1-level unravelling
             linres = results[0][:]
             for res in results[1:]:
@@ -797,11 +717,11 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return linres  
 
     def _reader(self):
-        """ Applies self.p_fn for every trajectory frame. Parallelizable!
+        """ Applies self.p.p_fn for every trajectory frame. Parallelizable!
 
         """
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
-        if self.p_smp:
+        if self.p.smp:
             # XTC/TRR reader has this method, but not all formats...
             if hasattr(self._Universe__trajectory, "_reopen"):
                 self._Universe__trajectory._reopen()
@@ -816,12 +736,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self._set_iterparms()
         if self.i_unemployed: # This little piggy stays home
             self.i_parms_set = False
-            self.p_parms_set = False
+            self.p.parms_set = False
             return reslist
 
         for frame in self.iterate():
             if not self.i_overlap:
-                reslist.append(self.p_fn(*self.p_args))
+                reslist.append(self.p.p_fn(*self.p.args))
         return reslist
 
     def _extractor(self):
@@ -829,7 +749,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
-        if self.p_smp:
+        if self.p.smp:
             self._Universe__trajectory._reopen()
         if not self.i_parms_set:
             self._set_iterparms()
@@ -871,31 +791,31 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # Because of parallelization lots of stuff become limited to the iteration scope.
         # defined a group of i_ variables just for that.
         self.i_unemployed = False
-        if self.parallel:
-            #if self.p_num < 2 and self.p_smp:
+        if self.p.parallel:
+            #if self.p.num < 2 and self.p.smp:
             #    raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
 
-            if self.p_mode == "interleaved":
-                frames_per_worker = numpy.ones(self.p_num,dtype=numpy.int)*(self.totalframes/self.p_num)
-                frames_per_worker[:self.totalframes%self.p_num] += 1 # Last workers to arrive work less. That's life for you.
-                self.i_skip = self.opts.skip * self.p_num
-                self.i_startframe = self.startframe + self.opts.skip*self.p_id
-                self.i_endframe = self.i_startframe + int(frames_per_worker[self.p_id]-1)*self.i_skip 
-            elif self.p_mode == "block":
+            if self.p.mode == "interleaved":
+                frames_per_worker = numpy.ones(self.p.num,dtype=numpy.int)*(self.totalframes/self.p.num)
+                frames_per_worker[:self.totalframes%self.p.num] += 1 # Last workers to arrive work less. That's life for you.
+                self.i_skip = self.opts.skip * self.p.num
+                self.i_startframe = self.startframe + self.opts.skip*self.p.id
+                self.i_endframe = self.i_startframe + int(frames_per_worker[self.p.id]-1)*self.i_skip 
+            elif self.p.mode == "block":
                 # As-even-as-possible distribution of frames per workers, allowing the first one to work more to compensate the lack of overlap.
-                frames_per_worker = numpy.ones(self.p_num,dtype=numpy.int)*((self.totalframes-self.p_overlap)/self.p_num)
-                frames_per_worker[:(self.totalframes-self.p_overlap)%self.p_num] += 1 
-                frames_per_worker[0] += self.p_overlap # Add extra overlap frames to the first worker.
+                frames_per_worker = numpy.ones(self.p.num,dtype=numpy.int)*((self.totalframes-self.p.overlap)/self.p.num)
+                frames_per_worker[:(self.totalframes-self.p.overlap)%self.p.num] += 1 
+                frames_per_worker[0] += self.p.overlap # Add extra overlap frames to the first worker.
                 self.i_skip = self.opts.skip
-                self.i_startframe = self.startframe + int(numpy.sum(frames_per_worker[:self.p_id]))*self.i_skip
-                self.i_endframe = self.i_startframe + int(frames_per_worker[self.p_id]-1)*self.i_skip 
+                self.i_startframe = self.startframe + int(numpy.sum(frames_per_worker[:self.p.id]))*self.i_skip
+                self.i_endframe = self.i_startframe + int(frames_per_worker[self.p.id]-1)*self.i_skip 
                 # And now we subtract the overlap from the startframe, except for worker 0
-                if self.p_id:
-                    self.i_startframe -= self.p_overlap*self.i_skip
+                if not self.p.is_root:
+                    self.i_startframe -= self.p.overlap*self.i_skip
             else:
-                raise ValueError("Unrecognized p_mode \"%r\"" % (self.p_mode))
+                raise ValueError("Unrecognized p_mode \"%r\"" % (self.p.mode))
             # Let's check for zero work
-            if not frames_per_worker[self.p_id]:
+            if not frames_per_worker[self.p.id]:
                 self.i_unemployed = True
         else:
             self.i_skip = self.opts.skip
@@ -903,18 +823,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.i_endframe = self.endframe
         self.i_totalframes = int(math.ceil(float(self.i_endframe-self.i_startframe+1)/self.i_skip))
         self.i_parms_set = True
-
-
-    def _set_parallel_parms(self, parallel=True):
-        self.p_mpi = parallel and self.mpi
-        self.p_smp = parallel and not self.mpi
-        self.parallel = parallel
-        if self.parallel:
-            if self.p_mpi:
-                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirun -np nprocs
-            elif self.p_smp and self.p_num is None:
-                self.p_num = multiprocessing.cpu_count()
-        self.p_parms_set = True
 
     def _getinputline(self):
         while True:

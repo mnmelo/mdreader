@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import mdreader
+import mdreaderdev as mdreader
 import numpy
 """
 A simple example of a calculation done every frame on the coordinates
@@ -25,7 +25,7 @@ def calc_frame_angles():
     norms = numpy.hypot.reduce(vecs, axis=1)
     return (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
 
-result = md.do_in_parallel(calc_frame_angles)   # Result is now a list of as many elements as frames,
+result = md.do(calc_frame_angles)   # Result is now a list of as many elements as frames,
                                                 #  each being a returned value from the called function.
 angles = numpy.array(result)    # Gathering the results in an array.
 numpy.savetxt(md.opts.outfile, angles)
