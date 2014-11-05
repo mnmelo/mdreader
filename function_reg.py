@@ -13,13 +13,14 @@ import types
 ########################################################################
 
 class RegisteredFunction():
-    def __init__(self, fn, name=None, parent_col=None, rettype="python", fn_args=(), fn_kwargs=dict()):
+    def __init__(self, fn, name=None, parent_col=None, nret=1, rettype="python", fn_args=(), fn_kwargs=dict()):
         if not callable(fn):
             raise TypeError("Attempted to register as a function an object that is not callable")
         self.fn = fn
         self.args = fn_args
         self.kwargs = fn_kwargs
         self.name = None
+        self.nret = 1
         if name is None:
             self.name = getattr(fn,"__name__", None)
         self.make_name_unique()
