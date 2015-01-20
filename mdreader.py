@@ -820,8 +820,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return reslist
 
         for frame in self.iterate():
+            result = self.p_fn(*self.p_args)
             if not self.i_overlap:
-                reslist.append(self.p_fn(*self.p_args))
+                reslist.append(result)
         return reslist
 
     def _extractor(self):
