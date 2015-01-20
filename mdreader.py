@@ -26,6 +26,7 @@ import types
 import multiprocessing
 import socket
 import ctypes
+import collections
 from . import parallelization
 from . import function_reg
 
@@ -64,9 +65,6 @@ def check_outfile(fname):
 def check_positive(val):
     if val < 0:
         raise ValueError('Argument must be >= 0: %r' % (val))
-
-def xtclen(xtc):
-    return(len(xtc))
 
 # Workaround for the lack of datetime.timedelta.total_seconds() in python<2.7
 if hasattr(datetime.timedelta, "total_seconds"):
@@ -260,6 +258,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
         self.progress = None # Progress reporting type
         self.p = parallelization.Parallel()
+        self.reg_fns = function_reg.FunctionList()
 
     def __len__(self):
         return self.totalframes
@@ -683,39 +682,108 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.p.parms_set = False
             return tseries
 
+    def _pre_exec(self):
+        """Initializes lists and arrays to receive the results of the iterations"""
+        for fn in self._reglist:
+            if self.p.remote:
+                fn.init_res(len(self.i.nframes))
+            #Apparently multiprocessing doesn't need to repoint if it got the arrays from shared mem.
+            #else:
+            #    fn.repoint_res(len(self))
 
-    def do(self, fn, args=(), parallel=True, memmodel="auto"):
-        """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
-        args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
+
+    def _exec_reg(self):
+        for frame in iterate():
+            if self.p.remote:
+                iframe = self.i.worker_iframe
+            else:
+                iframe = self.i.resframes[self.i.worker_iframe]
+            for fn self._reglist.values():
+                nres = len(fn.rettype)
+                if nres == 1:
+                    fn.res[iframe] = fn.default_call()
+                else:
+                    tmp_res = fn.default_call()
+                    if len(tmp_res) != nres:
+                        raise ValueError("On frame %d function '%s' returned a different number of results than expected. Got %d, expected %d." % (frame.frame, fn.name, len(tmp_res), nres))
+                    for res_sub, tmp_res_sub in zip(fn.res, tmp_res):
+                        res_sub[iframe] = tmp_res_sub
+                        
+    def _do_remote(self, p_id=None):
+        # connect to the manager
+        # --loop
+          # get workload
+          # set iterparms
+          # _pre_exec
+          # _exec_reg
+          # signal 'done' in return queue
+          # (a)synchronously send results to root
+        # --loop
+        if p_id is not None:
+            self.p.p_id = p_id
+            self.p.is_root = False # There'll be a worker with p_id=0
+        self.mgr_client = parallelization.ManagerClient(self)
+        while True:
+            workframes = self.mgr_client.get_workload()
+            if workframes is None:
+                return
+            self.i._set_iterparms(workframes)
+            self._pre_exec()
+            self._exec_reg()
+            
+            if self.remote:
+                for res in self._reglist.result:
+                    for i, sub_res in enumerate(res):
+                        if res.r_ctypes[i] is None:
+                            # MPI-communicate python object
+                            self.p.xcomm.send(sub_res, dest=0, tag=self.p.p_id)
+                        else:
+                            # MPI-communicate res.r_ctypes[i]
+                            self.p.xcomm.Send(res.r_ctypes[i], dest=0, tag=self.p.p_id)
+
+
+    def _do_reg(self):
+        if not self._parsed:
+            self.do_parse()
+        if not self.p.parms_set:
+            self.p._set_parallel_parms()
+        if not self.i.parms_set():
+            self.i._set_iterparms()
+
+        if not self.p.parallel:
+            self._pre_exec()
+            self._exec_reg()
+        else:
+            if self.p.is_root:
+                self.manager_server = parallelization.ManagerServer(self)
+            else:
+                if self.p.remote:
+                    self._do_remote()
+                #local MPI workers get killed and replaced by multiprocessing ones 
+                if not self.p.mpi_keep_workers_alive:
+                    sys.exit(0)
+                else:
+                    self.p.comm.Barrier()
+                    return
+        return self._reglist
+
+    def do(self, fn, *args, fn_args=(), fn_kwargs=dict(), parallel=True, **kwargs):
+        """Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
+        fn_args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple. fn_kwargs behaves analogously for named arguments.
         parallel can be set to False to force serial behavior.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
         """
-        self.p.p_fn = fn
-        self.p.args = args
-        if not self._parsed:
-            self.do_parse()
-        if not self.p.parms_set:
-            self.p._set_parallel_parms(parallel)
-
-        if not self.p.smp:
-            if not self.p.p_mpi:
-                return self._reader()
-            else:
-                res = self._reader()
-                res = self.comm.gather(res, root=0)
-                if self.p.is_root:
-                    return [val for subl in res for val in subl] 
-                elif not self.p.mpi_keep_workers_alive:
-                    sys.exit(0)
+        self._reglist = function_reg.FunctionList()
+        if isinstance(fn, function_reg.RegisteredFunction):
+            self._reglist[fn.name] = fn
         else:
-            pool = parallelization.Pool(processes=self.p.num)
-            results = pool.map(parallelization._parallel_launcher, [(self, i) for i in range(self.p.num)]) 
-            # 1-level unravelling
-            linres = results[0][:]
-            for res in results[1:]:
-                linres.extend(res)
-            return linres  
+            self._reglist.register(fn, *args, fn_args=fn_args, fn_kwargs=fn_kwargs, kwargs)
+
+        return self._do_reg()
+
+    def _reader_smp(self):
+        pass
 
     def _reader(self):
         """ Applies self.p.p_fn for every trajectory frame. Parallelizable!

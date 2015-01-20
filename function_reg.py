@@ -13,7 +13,7 @@ import types
 ########################################################################
 
 class RegisteredFunction():
-    def __init__(self, fn, name=None, parent_col=None, nret=1, rettype=[("python",(1,))], fn_args=(), fn_kwargs=dict()):
+    def __init__(self, parent_collection=None, fn, name=None, nret=1, rettype=[("python",(1,))], fn_args=(), fn_kwargs=dict()):
         if not callable(fn):
             raise TypeError("Attempted to register as a function an object that is not callable")
         self.fn = fn
@@ -28,24 +28,86 @@ class RegisteredFunction():
         else:
             self.rettype = get_rettype()
         self.nret = len(self.rettype)
-        # can we use the enhanced memory model?
-        self.emm = self.rettype[0][0] != "python"
+        ## can we use the enhanced memory model?
+        ##self.emm = self.rettype[0][0] != "python"
+        self.res = FunctionResult()
 
     def __call__(self, *args, **kwargs):
         return self.fn(*args, **kwargs)
+
+    def default_call(self):
+        return self(*self.args, **self.kwargs)
+
+    def init_res(self, nframes):
+        self.res.initialize(self.rettype, nframes)
+
+    def repoint_res(self):
+        self.res.recreate_arrays_fromraw()
 
     def make_name_unique(self):
         num = 1
         if self.name is None:
             self.name = "Function"
-        if self.parent_col is None:
+        if self.parent_colllection is None:
             return
         else:
             fullname = self.name
-            while self.parent_col.fn_list.has_key(fullname):
+            while self.parent_collection.fn_list.has_key(fullname):
                 num += 1
                 fullname = "%s_%d" % (self.name, num)
             self.name = fullname
+
+class FunctionResult(list):
+    def initialize(self, rettype, nframes):
+        """This initializes the arrays.
+        Remote, non-local workers call this with the number of frames they were passed.
+        """
+        #try:
+        #    if self.initialized:
+        #        return
+        #except AttributeError:
+        #    self.initialized = False
+        self.nframes = nframes
+        self.rettype = rettype
+        self.r_ctypes = []
+        for ctype, shape in self.rettype:
+            if ctype != "python":
+                #We're using the EMM
+                self.r_ctypes.append(multiprocessing.RawArray(ctype, numpy.product(shape)*nframes))
+                self.append(numpy.ctypeslib.as_array(self.r_ctypes[-1]))
+                self[-1] = self[-1].reshape((nframes,)+shape)
+            else:
+                self.r_ctypes.append(None)
+                self.append(range(self.nframes))
+        self.initialized = True
+
+    def recreate_arrays_fromraw(self):
+        try:
+            if not self.initialized:
+                raise AttributeError
+        except AttributeError:
+            raise AttributeError("Tried to recreate arrays but the pointers haven't yet been initialized by initialize()")
+        for i, (ctype, shape) in self.rettype:
+            if ctype != "python":
+                self[i] = numpy.ctypeslib.as_array(self.r_ctypes[i])
+                self[i] = self[i].reshape((self.nframes,)+shape)
+
+class FunctionList(collections.Ordereddict):
+    def register(self, *args, **kwargs):
+        """The register function passes its arguments to the initialization of RegisteredFunction, with the addition that it sets parnt_collection to the current collection
+        """
+        fn = RegisteredFunction(*args, parent_collection=self, **kwargs)
+        self[fn.name] = fn
+
+    @property
+    def result(self):
+        return tuple([fn.res for fn in self.values()])
+
+    def repoint_resarrays(self):
+        for fn in self.values():
+            fn.res.recreate_arrays_fromraw()
+
+
 
 def get_rettype(fn, fn_args=(), fn_kwargs=dict()):
     """Function to get the return type of a function.
@@ -80,7 +142,9 @@ def get_type(obj, go_deep=False):
                 typ = [get_type(subobj) for subobj in obj ]
                 if not all_same(typ):
                     return typ
-        return get_type(numpy.array(obj))
+            return get_type(numpy.array(obj))
+        else:
+            return get_type(numpy.array([obj]))
     except KeyError:
         # doesn't have a translation into ctypes
         return numpy.object, obj.shape
@@ -92,19 +156,5 @@ def is_iter(obj):
 
 def all_same(lst):
     return lst.count(lst[0]) == len(lst)
-        
-
-class FunctionList():
-    def __init__(self):
-        self.fn_list = collections.Ordereddict([])
-
-    def __len__(self):
-        return len(self.fn_list)
-
-    def register(self, *args, **kwargs):
-        kwargs["parent_col"] = self
-        fn = RegisteredFunction(*args, **kwargs)
-        self.fn_list[fn.name] = fn
-        
         
 

@@ -113,10 +113,6 @@ class Parallel():
                 if not self.is_root and not self.mpi_keep_workers_alive:
                     sys.exit(0)
 
-    # The overridable function for parallel processing.
-    def p_fn(self):
-        pass
-
     @property
     def is_root(self):
         return self.id == 0
@@ -128,7 +124,79 @@ class Parallel():
         if self.parallel:
             if self.p_mpi:
                 self.num = self.comm.Get_size() # MPI size always overrides manually set num. The user controls the pool size with mpirun -np nprocs
+                if self.is_root:
+                    self.homecores = multiprocessing.cpu_count()
             elif self.smp and self.num is None:
                 self.num = multiprocessing.cpu_count()
         self.parms_set = True
+
+class ManagerClient():
+    def __init__(self, parent):
+        self.parent = parent
+        self.remote = self.parent.p.remote
+
+    def get_workload(self):
+        if self.remote:
+            return self._get_workload_remote()
+        else:
+            return self._get_workload_local()
+
+    def _get_workload_local(self):
+        self.return_q.put((self.parent.p.p_id, self.parent.i.performance))
+        return self.work_assignment_q.get()
+
+    def _get_workload_remote(self):
+        self.return_q.put((self.parent.p.p_id, self.parent.i.performance))
+        return self.work_assignment_q.get()
+
+class ManagerServer():
+    def __init__(self, parent):
+        self.parent = parent
+        self.p = self.parent.p
+        self.workload_queues = [multiprocessing.Queue() for i in range(self.p.nprocs)]
+        self.return_queues = [multiprocessing.Queue() for i in range(self.p.nprocs)]
+        
+        self.work_qs = []
+        for i in range(self.parent.p.nprocs):
+            self.worq_qs.append(Queue.Queue())
+
+        if self.p.has_remote:
+            mpi_server = threading.Thread(target=ManagerServer.start_mpi_server, args=(self,))
+            mpi_server.start()
+
+        local_procs = []
+        for l_id  in range(self.p.local_ids):
+            local_procs.append(multiprocessing.Process(target=MDreader.mdreader._do_remote), args=(parent,l_id))
+            local_procs[-1].start()
+        self.run()
+        for proc in local_procs:
+            proc.join()
+        if self.p.mpi:
+            self.p.comm.Barrier()
+        
+    def run(self):
+        pass
+
+    def start_mpi_server(self):
+        self.working_remote = self.p.num_remote
+        incoming_perf = ctypes.c_float()
+
+        for r_id in self.p.remote_ids:
+            self.get_send_workload(r_id)
+
+        while self.working_remote:
+            rcv = comm.Recv(incoming_perf, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
+            sender = rcv.tag
+            self.receive_mpidata(sender)
+            self.get_send_workload(sender, perf)
+
+    def get_send_workload(self, p_id, perf):
+        self.done_q.put((p_id, perf))
+        workload = self.worq_qs[p_id].get()
+        if workload is None:
+           self.working_remote -= 1
+        self.parent.p.xcomm.send(workload, dest = p_id)
+
+
+
 
