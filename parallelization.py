@@ -154,7 +154,7 @@ class ManagerServer():
         self.parent = parent
         self.p = self.parent.p
         self.workload_queues = [multiprocessing.Queue() for i in range(self.p.nprocs)]
-        self.return_queues = [multiprocessing.Queue() for i in range(self.p.nprocs)]
+        self.return_queues = multiprocessing.Queue()
         
         self.work_qs = []
         for i in range(self.parent.p.nprocs):
@@ -171,6 +171,7 @@ class ManagerServer():
         self.run()
         for proc in local_procs:
             proc.join()
+        mpi_server.join()
         if self.p.mpi:
             self.p.comm.Barrier()
         
@@ -196,7 +197,4 @@ class ManagerServer():
         if workload is None:
            self.working_remote -= 1
         self.parent.p.xcomm.send(workload, dest = p_id)
-
-
-
 
