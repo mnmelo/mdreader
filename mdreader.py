@@ -555,11 +555,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             if gid < refng or not autondx:
                 if not self.stdin:
                     sys.stderr.write("%s:\n" % (ndxstr))
-                self.ndxgs.append(self.atoms[ndx_atids[self._getinputline()][1]])
+                ndxnum = self._getinputline()
+                self.ndxgs.append(self.atoms[ndx_atids[ndxnum][1]])
+                self.ndxgs[-1].ndx_name = ndx_atids[ndxnum][0]
             else:
                 if gid == refng:
                     sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(ndx_atids))
                 self.ndxgs.append(self.atoms[ndx_atids[auto_id][1]])
+                self.ndxgs[-1].ndx_name = ndx_atids[auto_id][0]
                 auto_id += 1
 
     def iterate(self):
