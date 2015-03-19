@@ -5,7 +5,7 @@
 # Released under the GNU Public Licence, v2 or any higher version
 #
 """
-Class for the all-too-frequent task of asking for options and reading in an xtc. 
+Class for the all-too-frequent task of asking for options and reading in trajectories. 
 
 version v2013.03.06
 by Manuel Melo (m.n.melo@rug.nl)
@@ -76,9 +76,6 @@ def check_outfile(fname):
 def check_positive(val):
     if val < 0:
         raise ValueError('Argument must be >= 0: %r' % (val))
-
-def xtclen(xtc):
-    return(len(xtc))
 
 # Workaround for the lack of datetime.timedelta.total_seconds() in python<2.7
 if hasattr(datetime.timedelta, "total_seconds"):
@@ -270,7 +267,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
     optional arguments:
       -h, --help    show this help message and exit
-      -f TRAJ       file	The trajectory to analyze. (default: traj.xtc)
+      -f TRAJ       file	The trajectory to analyze. If multiple files they'll be analyzed concatenated. (default: traj.xtc)
       -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: topol.tpr)
       -o OUT        file	The main data output file. (default: data.xvg)
       -b TIME       real	Time to begin analysis from. (default: 0)
@@ -379,9 +376,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # Slightly hackish way to avoid code duplication
         parser = self if self.internal_argparse else self._dummyopts
         # Note: MUST always use dest as a kwarg, to satisfy the DummyParser. Anything without 'dest' will be ignored by it (only relevant when the user sets internal_argparse to False)
-        parser.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
-                help = 'file\tThe trajectory to analyze.')
-        parser.add_argument('-s', metavar='TOPOL', dest='top', default=s,
+        parser.add_argument('-f', metavar='TRAJ', dest="infile", default=f, nargs="*",
+                help = 'file\tThe trajectory to analyze. If multiple files they\'ll be analyzed concatenated.')
+        parser.add_argument('-s', metavar='TOPOL', dest="topol", default=s,
                 help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
         parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
                 help = 'file\tThe main data output file.')
@@ -391,7 +388,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'real\tTime to end analysis at.')
         parser.add_argument('-fmn',  action='store_true', dest='asframenum',
                 help = 'bool\tWhether to interpret -b and -e as frame numbers.')
-        parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
+        parser.add_argument('-skip', metavar='FRAMES', type=int, default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
         parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
@@ -459,12 +456,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             sys.stderr.write("Loading...\n")
         ## Post option handling
         if self.check_files:
-            map(check_file,(self.opts.top,self.opts.xtc))
+            map(check_file,(self.opts.topol,)+tuple(self.opts.infile))
             map(check_outfile,(self.opts.outfile,))
             map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
         if self.opts.endtime < self.opts.starttime:
             raise ValueError('Endtime lower than starttime.')
-        MDAnalysis.Universe.__init__(self, self.opts.top, self.opts.xtc)
+        MDAnalysis.Universe.__init__(self, self.opts.topol, *self.opts.infile)
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
@@ -805,14 +802,21 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         if self.p_smp:
-            # XTC/TRR reader has this method, but not all formats...
-            if hasattr(self._Universe__trajectory, "_reopen"):
-                self._Universe__trajectory._reopen()
-            elif hasattr(self._Universe__trajectory, "dcdfile"):
-                self._Universe__trajectory.dcdfile.close()
-                self._Universe__trajectory.dcdfile = open(self._Universe__trajectory.dcdfilename, 'rb')
+            # Let's make this generic and always loop over a list of formats. If it's the ChainReader then they all get in.
+            rdrs = []
+            if self.trajectory.format == "CHAIN":
+                rdrs.extend(self.trajectory.readers)
             else:
-                raise AttributeError("Don't know how to get a new file descriptor for this trajectory reader.")
+                rdrs.append(self.trajectory)
+            for rdr in rdrs:
+                # XTC/TRR reader has this method, but not all formats...
+                if hasattr(rdr, "_reopen"):
+                    rdr._reopen()
+                elif hasattr(rdr, "dcdfile"):
+                    rdr.dcdfile.close()
+                    rdr.dcdfile = open(self.trajectory.filename, 'rb')
+                else:
+                    raise AttributeError("Don't know how to get a new file descriptor for %s trajectory reader." % rdr.format)
 
         reslist = []
         if not self.i_parms_set:
