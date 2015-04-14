@@ -133,7 +133,13 @@ class Parallel():
 class ManagerClient():
     def __init__(self, parent):
         self.parent = parent
-        self.remote = self.parent.p.remote
+        self.p = self.parent.p
+        self.remote = self.p.remote
+        if self.remote:
+            len_workload = ctypes.c_long()
+        else:
+            self.in_q = parent.manager_server.workload_queues[self.p.p_id]
+            self.out_q = parent.manager_server.return_queue
 
     def get_workload(self):
         if self.remote:
@@ -142,24 +148,26 @@ class ManagerClient():
             return self._get_workload_local()
 
     def _get_workload_local(self):
-        self.return_q.put((self.parent.p.p_id, self.parent.i.performance))
-        return self.work_assignment_q.get()
+        # This is how SMP workers get their assignments.
+        # Performance will be None for the first batchi of frames
+        self.out_q.put((self.p.p_id, self.parent.i.performance)) 
+        return self.in_q.get()
 
     def _get_workload_remote(self):
-        self.return_q.put((self.parent.p.p_id, self.parent.i.performance))
-        return self.work_assignment_q.get()
+        # This is how MPI workers get their assignments.
+        xcomm.send(self.parent.i.performance, dest=0) # p_id information is included in the msg
+        if self.parent.i.performance is not None: # We have results to send
+            self.parent._communicate_mpi_results()
+        workload = xcomm.recv(source=0)
+        return workload
 
 class ManagerServer():
     def __init__(self, parent):
         self.parent = parent
         self.p = self.parent.p
         self.workload_queues = [multiprocessing.Queue() for i in range(self.p.nprocs)]
-        self.return_queues = multiprocessing.Queue()
+        self.return_queue = multiprocessing.Queue()
         
-        self.work_qs = []
-        for i in range(self.parent.p.nprocs):
-            self.worq_qs.append(Queue.Queue())
-
         if self.p.has_remote:
             mpi_server = threading.Thread(target=ManagerServer.start_mpi_server, args=(self,))
             mpi_server.start()
@@ -171,24 +179,25 @@ class ManagerServer():
         self.run()
         for proc in local_procs:
             proc.join()
-        mpi_server.join()
-        if self.p.mpi:
-            self.p.comm.Barrier()
+        if self.p.has_remote:
+            mpi_server.join()
         
     def run(self):
         pass
 
     def start_mpi_server(self):
         self.working_remote = self.p.num_remote
-        incoming_perf = ctypes.c_float()
+        incoming_perf = ctypes.c_double()
+        status = mpi4py.MPI.Status()
 
         for r_id in self.p.remote_ids:
             self.get_send_workload(r_id)
 
         while self.working_remote:
-            rcv = comm.Recv(incoming_perf, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
-            sender = rcv.tag
-            self.receive_mpidata(sender)
+            perf = xcomm.Recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+            sender = status.Get_source()
+            if perf is not None:
+                self.receive_mpidata(sender)
             self.get_send_workload(sender, perf)
 
     def get_send_workload(self, p_id, perf):
@@ -197,4 +206,19 @@ class ManagerServer():
         if workload is None:
            self.working_remote -= 1
         self.parent.p.xcomm.send(workload, dest = p_id)
+
+    def receive_mpidata(self, p_id):
+        for res in parent.self._reglist.result:
+            for i, sub_res in enumerate(res):
+                if res.r_ctypes[i] is None:
+                    # MPI-communicate python object
+                    reclist = []
+                    self.p.xcomm.recv(reclist, source=p_id)
+                    #assign to the correct places in the result array
+                    for j, res_val in zip(self.worker_frames[p_id], reclist):
+                        sub_res[j] = res_val
+                else:
+                    recv_buf = sub_res.r_ctypes[i].copy()
+                    self.p.xcomm.Recv(sub_res.r_ctypes[i], dest=0)
+
 

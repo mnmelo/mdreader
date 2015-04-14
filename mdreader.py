@@ -710,6 +710,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                         res_sub[iframe] = tmp_res_sub
                         
     def _do_remote(self, p_id=None):
+        # Both MPI and spawned multiprocessing workers run this function
         # connect to the manager
         # --loop
           # get workload
@@ -719,27 +720,28 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
           # signal 'done' in return queue
           # (a)synchronously send results to root
         # --loop
-        if p_id is not None:
+        if p_id is not None: # Only SMP workers are invoked with p_id not None.
             self.p.p_id = p_id
             self.p.is_root = False # There'll be a worker with p_id=0
         self.mgr_client = parallelization.ManagerClient(self)
         while True:
-            workframes = self.mgr_client.get_workload()
-            if workframes is None:
+            workframes = self.mgr_client.get_workload()  # This is also where result communication
+            if workframes is None:                       #  takes place. For MPI and SMP python objects.
                 return
             self.i._set_iterparms(workframes)
             self._pre_exec()
             self._exec_reg()
             
-            if self.remote:
-                for res in self._reglist.result:
-                    for i, sub_res in enumerate(res):
-                        if res.r_ctypes[i] is None:
-                            # MPI-communicate python object
-                            self.p.xcomm.send(sub_res, dest=0, tag=self.p.p_id)
-                        else:
-                            # MPI-communicate res.r_ctypes[i]
-                            self.p.xcomm.Send(res.r_ctypes[i], dest=0, tag=self.p.p_id)
+    def _communicate_mpi_results(self):
+        # Only MPI workers need to communicate.
+        #  SMP ones assign directly to the right memory spot.
+        for res in self._reglist.result:
+            for i, sub_res in enumerate(res):
+                if res.r_ctypes[i] is None:
+                    # MPI-communicate python object
+                    self.p.xcomm.send(sub_res, dest=0)
+                else:
+                    self.p.xcomm.Send(res.r_ctypes[i], dest=0)
 
 
     def _do_reg(self):
@@ -756,9 +758,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         else:
             if self.p.is_root:
                 self.manager_server = parallelization.ManagerServer(self)
-            else:
-                if self.p.remote:
-                    self._do_remote()
+                if self.p.mpi:
+                    self.p.comm.Barrier()
+            else: # Only MPI workers get here. SMP ones haven't been spawned yet.
+                self._do_remote()
                 #local MPI workers get killed and replaced by multiprocessing ones 
                 if not self.p.mpi_keep_workers_alive:
                     sys.exit(0)
@@ -778,7 +781,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if isinstance(fn, function_reg.RegisteredFunction):
             self._reglist[fn.name] = fn
         else:
-            self._reglist.register(fn, *args, fn_args=fn_args, fn_kwargs=fn_kwargs, kwargs)
+            self._reglist.register(fn, *args, fn_args=fn_args, fn_kwargs=fn_kwargs, **kwargs)
 
         return self._do_reg()
 

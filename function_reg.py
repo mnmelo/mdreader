@@ -13,7 +13,7 @@ import types
 ########################################################################
 
 class RegisteredFunction():
-    def __init__(self, parent_collection=None, fn, name=None, nret=1, rettype=[("python",(1,))], fn_args=(), fn_kwargs=dict()):
+    def __init__(self, fn, parent_collection=None, name=None, nret=1, rettype=[("python",(1,))], fn_args=(), fn_kwargs=dict()):
         if not callable(fn):
             raise TypeError("Attempted to register as a function an object that is not callable")
         self.fn = fn
