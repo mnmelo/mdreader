@@ -762,7 +762,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return tseries
 
 
-    def do_in_parallel(self, fn, args=(), parallel=True):
+    def do_in_parallel(self, fn, **kwargs):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
         args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
         parallel can be set to False to force serial behavior.
@@ -770,10 +770,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         self.p_fn = fn
-        self.p_args = args
+        self.p_args = kwargs.get("args", ())
+        force_p_recheck = "parallel" in kwargs
+        parallel = kwargs.get("parallel", True)
         if not self._parsed:
             self.do_parse()
-        if not self.p_parms_set:
+        if not self.p_parms_set or force_p_recheck:
             self._set_parallel_parms(parallel)
 
         if not self.p_smp:
@@ -782,19 +784,27 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             else:
                 res = self._reader()
                 res = self.comm.gather(res, root=0)
-                if self.p_id == 0:
-                    return [val for subl in res for val in subl] 
-                elif not self.p_mpi_keep_workers_alive:
+                if not (self.p_id == 0 or self.p_mpi_keep_workers_alive):
                     sys.exit(0)
-
         else:
             pool = Pool(processes=self.p_num)
-            results = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
-            # 1-level unravelling
-            linres = results[0][:]
-            for res in results[1:]:
-                linres.extend(res)
-            return linres  
+            res = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
+
+        # 1-level unravelling and de-interlacing
+        if self.p_smp or (self.p_mpi and self.p_id == 0):
+            if self.p_mode == "block":
+                return [val for subl in res for val in subl] 
+            elif self.p_mode == "interleaved":
+                ret = []
+                for ctr in range(len(res[0])):
+                    for subl in res:
+                        try:
+                            ret.append(subl[ctr])
+                        except IndexError:
+                            pass
+                return ret
+            else:
+                raise NotImplementedError("Unknown parallelization mode '%s'" % self.p_mode)
 
     def _reader(self):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
