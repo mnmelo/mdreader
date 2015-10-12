@@ -769,6 +769,11 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
 
+        if self.p_smp:
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        # This must be the first thing after entering parallel land.
+            self._reopen_traj()
+
         reslist = []
         if not self.i_parms_set:
             self._set_iterparms()
@@ -776,9 +781,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self.i_parms_set = False
             self.p_parms_set = False
             return reslist
-        elif self.p_smp:# and self.p_id:
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos (root is exempt).
-            self._reopen_traj()
 
         for frame in self.iterate():
             result = self.p_fn(*self.p_args, **self.p_kwargs)
@@ -790,6 +792,13 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """ Extracts the values asked for in mdreader._tseries. Parallelizable!
 
         """
+        # This should become a function to pass to _reader... Lots of code duplication between these two.
+
+        if self.p_smp:# and self.p_id: ROOT IS NOT EXEMPT! Multiprocessing starts a new process for root too.
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        # This must be the first thing after entering parallel land.
+            self._reopen_traj()
+
         if not self.i_parms_set:
             self._set_iterparms()
 
@@ -805,9 +814,6 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             except AttributeError:
                 setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
         if not self.i_unemployed:
-            if self.p_smp:# and self.p_id: ROOT IS NOT EXEMPT! Ugly chrashes otherwise... why?...
-            # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos (root is exempt).
-                self._reopen_traj()
             for frame in self.iterate():
                 if self._tseries._cdx is not None:
                     self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,numpy.where(self._tseries._xyz)[0]]
