@@ -84,5 +84,6 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
-
+# Trajectory meta-info
+.*offsets.pkl
 
