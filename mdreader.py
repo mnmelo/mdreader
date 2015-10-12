@@ -27,6 +27,7 @@ import multiprocessing
 import socket
 import ctypes
 from . import parallelization
+from . import function_reg
 
 
 # Static descriptions ##################################################
@@ -198,7 +199,7 @@ class DummyParser():
         if dest is not None:
             self.__dict__[dest] = kwargs.get('default')
 
-# MDreader Class #######################################################
+# MDreader Classes #####################################################
 ########################################################################
 
 class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
@@ -683,7 +684,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return tseries
 
 
-    def do(self, fn, args=(), parallel=True):
+    def do(self, fn, args=(), parallel=True, memmodel="auto"):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
         args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
         parallel can be set to False to force serial behavior.
