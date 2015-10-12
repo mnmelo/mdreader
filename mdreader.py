@@ -5,7 +5,7 @@
 # Released under the GNU Public Licence, v2 or any higher version
 #
 """
-Class for the all-too-frequent task of asking for options and reading in an xtc. 
+Class for the all-too-frequent task of asking for options and reading in trajectories. 
 
 version v2013.03.06
 by Manuel Melo (m.n.melo@rug.nl)
@@ -77,16 +77,12 @@ def check_positive(val):
     if val < 0:
         raise ValueError('Argument must be >= 0: %r' % (val))
 
-def xtclen(xtc):
-    return(len(xtc))
-
 # Workaround for the lack of datetime.timedelta.total_seconds() in python<2.7
 if hasattr(datetime.timedelta, "total_seconds"):
     dtime_seconds = datetime.timedelta.total_seconds
 else:
     def dtime_seconds(dtime):
         return dtime.days*86400 + dtime.seconds + dtime.microseconds*1e-6
-
 
 # Helper Classes #######################################################
 ########################################################################
@@ -249,7 +245,31 @@ class DummyParser():
     def add_argument(self, *args, **kwargs):
         dest = kwargs.get('dest')
         if dest is not None:
-            self.__dict__[dest] = kwargs.get('default')
+            nargs = kwargs.get('nargs')
+            if nargs is not None:
+                val = [kwargs.get('default')]
+            else:
+                val = kwargs.get('default')
+            self.__dict__[dest] = val 
+
+class _NamedAtlist(numpy.ndarray):
+    """Adds a name to a list of indices, as a property."""
+    def __new__(cls, indices, name, attr='ndx_name'):
+        if isinstance(indices, cls):
+            ret = indices
+        if isinstance(indices, numpy.ndarray):
+            ret = indices.view(cls)
+        arr = numpy.array(indices)
+        ret = numpy.ndarray.__new__(cls, shape=arr.shape, dtype=arr.dtype, buffer=arr)
+        ret._xtra_attr = attr
+        setattr(ret, attr, name)
+        return ret
+    def to_atgroup(self, univ, name="", attr='ndx_prompt'):
+        atgp = univ.atoms[self]
+        setattr(atgp, self._xtra_attr, getattr(self, self._xtra_attr))
+        if name:
+           setattr(atgp, attr, name) 
+        return atgp
 
 # MDreader Class #######################################################
 ########################################################################
@@ -270,7 +290,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
     optional arguments:
       -h, --help    show this help message and exit
-      -f TRAJ       file	The trajectory to analyze. (default: traj.xtc)
+      -f TRAJ       file	The trajectory to analyze. If multiple files they'll be analyzed concatenated. (default: traj.xtc)
       -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: topol.tpr)
       -o OUT        file	The main data output file. (default: data.xvg)
       -b TIME       real	Time to begin analysis from. (default: 0)
@@ -379,9 +399,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         # Slightly hackish way to avoid code duplication
         parser = self if self.internal_argparse else self._dummyopts
         # Note: MUST always use dest as a kwarg, to satisfy the DummyParser. Anything without 'dest' will be ignored by it (only relevant when the user sets internal_argparse to False)
-        parser.add_argument('-f', metavar='TRAJ', dest='xtc', default=f,
-                help = 'file\tThe trajectory to analyze.')
-        parser.add_argument('-s', metavar='TOPOL', dest='top', default=s,
+        parser.add_argument('-f', metavar='TRAJ', dest="infile", default=f, nargs="*",
+                help = 'file\tThe trajectory to analyze. If multiple files they\'ll be analyzed concatenated.')
+        parser.add_argument('-s', metavar='TOPOL', dest="topol", default=s,
                 help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
         parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
                 help = 'file\tThe main data output file.')
@@ -401,15 +421,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if check_files is not None:
             self.check_files = check_files
 
-    def add_ndx(self, ng=1, ndxparms=[], ndxdefault=None, ngdefault=1, smartindex=True):
-        """ Adds an index read to the MDreader. A -n option will be added.
+    def add_ndx(self, ng=1, ndxparms=[], ndxdefault='index.ndx', ngdefault=1, smartindex=True):
+        """Adds an index read to the MDreader. A -n option will be added.
         ng controls how many groups to ask for.
         If ng is set to 'n' a -ng option will be added, which will then control how many groups to ask for.
         ndxparms should be a list of strings to be printed for each group selection. The default is "Select a group" (a colon is inserted automatically).
         To allow for one or more reference groups plus n analysis groups, ndxparms will be interpreted differently according to ng and the -ng option:
             If ng is "n" it will be set to the number of groups specified by option -ng plus the number of ndxparms elements before the last.
             If ng is greater than the number of elements in ndxparms, then the last element will be repeated to fulfill ng. If ndxparms is greater, all its elements will be used and ng ignored.
-        ndxdefault and ngdefault set the defaults for the -n and -ng options (None and 1, respectively). Note that with the index file set to None mdreader defaults to getting group info from the system residue names.
+        ngdefault sets the default for the -ng option (itself defaulting to 1).
+        ndxdefault sets the default for the -n option. Contrary to other mdreader flags, -n can be passed without arguments, in which case it will default to ndxdefault (which is 'index.ndx' by default). If -n is not passed at all it'll take a value of None, and mdreader will then default to getting group info from the system residue names.
         Note: if internal_argparse has been set to False, then ndxdefault directly sets which file to take as the index.
         smartindex controls smart behavior, by which an index with a number of groups equal to n is taken as is without prompting. You'll want to disble it when it makes sense to pick the same index group multiple times, or when order is important.
 
@@ -426,8 +447,8 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             raise AttributeError("Index can only be set once.")
         self.hasindex = True
         parser = self if self.internal_argparse else self.opts
-        parser.add_argument('-n', metavar='INDEX', dest='ndx', default=ndxdefault,
-              help = 'file\tIndex file.')
+        parser.add_argument('-n', metavar='INDEX', nargs='?', dest='ndx', default=None, const=ndxdefault,
+              help = 'file\tIndex file. Defaults to \'%s\' if the filename is not specified. If this flag is omitted altogether index information will be built from residue names.' % ndxdefault)
 
         self.ng = ng
         if ng == "n":
@@ -459,12 +480,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             sys.stderr.write("Loading...\n")
         ## Post option handling
         if self.check_files:
-            map(check_file,(self.opts.top,self.opts.xtc))
+            map(check_file,(self.opts.topol,)+tuple(self.opts.infile))
             map(check_outfile,(self.opts.outfile,))
             map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
         if self.opts.endtime < self.opts.starttime:
             raise ValueError('Endtime lower than starttime.')
-        MDAnalysis.Universe.__init__(self, self.opts.top, self.opts.xtc)
+        MDAnalysis.Universe.__init__(self, self.opts.topol, *self.opts.infile)
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
@@ -488,79 +509,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self.ndxgs = [self.atoms[ndx] for ndx in tmp_ndx]
 
     def _parse_ndx(self):
-        if self.opts.ndx is not None:
-            ndx_atids=[]
-            tmpstr=""
-            ndxheader=None
-            with open(self.opts.ndx) as NDX:
-                while True:
-                    line = NDX.readline()
-                    mtx = re.match('\s*\[\s*(\S+)\s*\]\s*',line)
-                    if mtx or not line:
-                        if ndxheader is not None:
-                            ndx_atids.append((ndxheader, numpy.array(tmpstr.split(), dtype=int)-1))
-                            tmpstr = ""
-                        if not line:
-                            break
-                        ndxheader = mtx.groups()[0]
-                    else:
-                        tmpstr += line
-        else:
-            resnames = numpy.unique(self.atoms.resnames())
-            ndx_atids = [ (rn, self.selectAtoms("resname %s" % (rn,)).indices()) for rn in resnames ]
-            ndx_atids.insert(0,("System", self.atoms.indices()))
-
-
-        # How many groups to auto assign (it may be useful to have the same group as a reference and as an analysis group, so we check it a bit more thoroughly).
-        if self.ng == "n":
-            refng = max(0,len(self.ndxparms)-1)
-            otherng = self.opts.ng
-            self.ng = refng+otherng
-        elif self.ng > len(self.ndxparms):
-            refng = max(0,len(self.ndxparms)-1)
-            otherng = self.ng-refng
-        else:
-            self.ng = len(self.ndxparms)
-            otherng = self.ng
-            refng = 0
-
-        if not self.ndxparms:
-            self.ndxparms = ["Select a group"]*self.ng
-        elif self.ng > len(self.ndxparms):
-            self.ndxparms.extend([self.ndxparms[-1]]*(otherng-1))
-
-        autondx = 0
-        if self.smartindex and len(ndx_atids)==otherng:
-            autondx = otherng
-
-        # Check for interactivity, otherwise just eat it from stdin
-        self.stdin = []
-        if sys.stdin.isatty():
-            self.interactive = True
-            maxlen = str(max(map(len, zip(*ndx_atids)[0])))
-            maxidlen = str(len(str(len(ndx_atids)-1)))
-            maxlenlen = str(max(map(len, (map(str, (map(len, zip(*ndx_atids)[1])))))))
-            for id, hd in enumerate(ndx_atids):
-                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (id, hd[0], len(hd[1])))
-            sys.stderr.write("\n")
-        else:
-            self.interactive = False
-            import select
-            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
-                self.stdin = map(int,"".join(sys.stdin.readlines()).split())
-
-        self.ndxgs=[]
-        auto_id = 0       # for auto assignment of group ids
-        for gid, ndxstr in enumerate(self.ndxparms):
-            if gid < refng or not autondx:
-                if not self.stdin:
-                    sys.stderr.write("%s:\n" % (ndxstr))
-                self.ndxgs.append(self.atoms[ndx_atids[self._getinputline()][1]])
-            else:
-                if gid == refng:
-                    sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(ndx_atids))
-                self.ndxgs.append(self.atoms[ndx_atids[auto_id][1]])
-                auto_id += 1
+        self._get__ndx_atgroups()
+        self._ndx_prepare()
+        self._ndx_input()
+        self._select_ndx_atgroups()
 
     def iterate(self):
         """Yields snapshots from the trajectory according to the specified start and end boundaries and skip.
@@ -762,18 +714,26 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return tseries
 
 
-    def do_in_parallel(self, fn, args=(), parallel=True):
+    def do_in_parallel(self, fn, *args, **kwargs):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
-        args should be a tuple or list of arguments that will be passed (with the star operator) to fn. It defaults to the empty tuple.
+        args and kwargs should be an iterable, resp. a dictionary, of arguments that will be passed (with the star, resp. double-star, operator) to fn. Default to the empty tuple and empty dict.
         parallel can be set to False to force serial behavior.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
         """
         self.p_fn = fn
+        try:
+            parallel = kwargs.pop("parallel")
+        except KeyError:
+            parallel = True
+        else:
+            force_p_recheck = True
         self.p_args = args
+        self.p_kwargs = kwargs
+
         if not self._parsed:
             self.do_parse()
-        if not self.p_parms_set:
+        if not self.p_parms_set or force_p_recheck:
             self._set_parallel_parms(parallel)
 
         if not self.p_smp:
@@ -782,34 +742,37 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             else:
                 res = self._reader()
                 res = self.comm.gather(res, root=0)
-                if self.p_id == 0:
-                    return [val for subl in res for val in subl] 
-                elif not self.p_mpi_keep_workers_alive:
+                if not (self.p_id == 0 or self.p_mpi_keep_workers_alive):
                     sys.exit(0)
-
         else:
             pool = Pool(processes=self.p_num)
-            results = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
-            # 1-level unravelling
-            linres = results[0][:]
-            for res in results[1:]:
-                linres.extend(res)
-            return linres  
+            res = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
+
+        # 1-level unravelling and de-interlacing
+        if self.p_smp or (self.p_mpi and self.p_id == 0):
+            if self.p_mode == "block":
+                return [val for subl in res for val in subl] 
+            elif self.p_mode == "interleaved":
+                ret = []
+                for ctr in range(len(res[0])):
+                    for subl in res:
+                        try:
+                            ret.append(subl[ctr])
+                        except IndexError:
+                            pass
+                return ret
+            else:
+                raise NotImplementedError("Unknown parallelization mode '%s'" % self.p_mode)
 
     def _reader(self):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+
         if self.p_smp:
-            # XTC/TRR reader has this method, but not all formats...
-            if hasattr(self._Universe__trajectory, "_reopen"):
-                self._Universe__trajectory._reopen()
-            elif hasattr(self._Universe__trajectory, "dcdfile"):
-                self._Universe__trajectory.dcdfile.close()
-                self._Universe__trajectory.dcdfile = open(self._Universe__trajectory.dcdfilename, 'rb')
-            else:
-                raise AttributeError("Don't know how to get a new file descriptor for this trajectory reader.")
+        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        # This must be the first thing after entering parallel land.
+            self._reopen_traj()
 
         reslist = []
         if not self.i_parms_set:
@@ -820,7 +783,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             return reslist
 
         for frame in self.iterate():
-            result = self.p_fn(*self.p_args)
+            result = self.p_fn(*self.p_args, **self.p_kwargs)
             if not self.i_overlap:
                 reslist.append(result)
         return reslist
@@ -829,9 +792,13 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """ Extracts the values asked for in mdreader._tseries. Parallelizable!
 
         """
+        # This should become a function to pass to _reader... Lots of code duplication between these two.
+
+        if self.p_smp:# and self.p_id: ROOT IS NOT EXEMPT! Multiprocessing starts a new process for root too.
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
-        if self.p_smp:
-            self._Universe__trajectory._reopen()
+        # This must be the first thing after entering parallel land.
+            self._reopen_traj()
+
         if not self.i_parms_set:
             self._set_iterparms()
 
@@ -846,7 +813,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 setattr(self._tseries, attr, numpy.empty(shape, dtype=(getattr(self.trajectory.ts, attr)).dtype))
             except AttributeError:
                 setattr(self._tseries, attr, numpy.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
-        if self.i_totalframes:
+        if not self.i_unemployed:
             for frame in self.iterate():
                 if self._tseries._cdx is not None:
                     self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,numpy.where(self._tseries._xyz)[0]]
@@ -854,6 +821,23 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     getattr(self._tseries, attr)[self.iterframe,...] = getattr(self.trajectory.ts, attr)
         return self._tseries
     
+    def _reopen_traj(self):
+       # Let's make this generic and always loop over a list of formats. If it's the ChainReader then they all get in.
+       rdrs = []
+       if self.trajectory.format == "CHAIN":
+           rdrs.extend(self.trajectory.readers)
+       else:
+           rdrs.append(self.trajectory)
+       for rdr in rdrs:
+           # XTC/TRR reader has this method, but not all formats...
+           if hasattr(rdr, "_reopen"):
+               rdr._reopen()
+           elif hasattr(rdr, "dcdfile"):
+               rdr.dcdfile.close()
+               rdr.dcdfile = open(self.trajectory.filename, 'rb')
+           else:
+               raise AttributeError("Don't know how to get a new file descriptor for %s trajectory reader." % rdr.format)
+
     def _set_frameparms(self):
         if self.opts.asframenum:
             self._startframe=int(max(0, self.opts.starttime))
@@ -917,12 +901,100 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 self.p_num = multiprocessing.cpu_count()
         self.p_parms_set = True
 
+    def _get__ndx_atgroups(self):
+        if self.opts.ndx is not None:
+            self._ndx_atlists=[]
+            tmpstr=""
+            ndxheader=None
+            with open(self.opts.ndx) as NDX:
+                while True:
+                    line = NDX.readline()
+                    mtx = re.match('\s*\[\s*(\S+)\s*\]\s*',line)
+                    if mtx or not line:
+                        if ndxheader is not None:
+                            self._ndx_atlists.append(_NamedAtlist(numpy.array(tmpstr.split(), dtype=int)-1, ndxheader))
+                            tmpstr = ""
+                        if not line:
+                            break
+                        ndxheader = mtx.groups()[0]
+                    else:
+                        tmpstr += line
+        else:
+            resnames = numpy.unique(self.atoms.resnames())
+            self._ndx_atlists = [_NamedAtlist(self.atoms.indices(), "System")]
+            self._ndx_atlists.extend([_NamedAtlist(self.selectAtoms("resname %s" % (rn,)).indices(), rn) for rn in resnames ])
+        self._ndx_names = [ndx.ndx_name for ndx in self._ndx_atlists]
+
+    def _ndx_prepare(self):
+        """Prepares number and content of index prompt strings. Decides on whether to autoassign index groups."""
+        # How many groups to auto assign (it may be useful to have the same group as a reference and as an analysis group, so we check it a bit more thoroughly).
+        if self.ng == "n":
+            self._refng = max(0,len(self.ndxparms)-1)
+            otherng = self.opts.ng
+            self.ng = self._refng+otherng
+        elif self.ng > len(self.ndxparms):
+            self._refng = max(0,len(self.ndxparms)-1)
+            otherng = self.ng-self._refng
+        else:
+            self.ng = len(self.ndxparms)
+            otherng = self.ng
+            self._refng = 0
+
+        if not self.ndxparms:
+            self.ndxparms = ["Select a group"]*self.ng
+        elif self.ng > len(self.ndxparms):
+            self.ndxparms.extend([self.ndxparms[-1]]*(otherng-1))
+
+        if self.smartindex and len(self._ndx_atlists)==otherng:
+            self._autondx = otherng
+        else:
+            self._autondx = 0
+
+    def _ndx_input(self):
+        """Prepares self.ndx_stdin to read from piped text or interactive prompt."""
+        # Check for interactivity, otherwise just eat it from stdin
+        self.ndx_stdin = []
+        if sys.stdin.isatty():
+            self.interactive = True
+            maxlen = str(max(map(lambda x:len(x.ndx_name), self._ndx_atlists)))
+            maxidlen = str(len(str(len(self._ndx_atlists)-1)))
+            maxlenlen = str(max(map(len, (map(str, (map(len, self._ndx_atlists)))))))
+            for ndxgid, hd in enumerate(self._ndx_atlists):
+                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd.ndx_name, len(hd)))
+            sys.stderr.write("\n")
+        else:
+            self.interactive = False
+            import select
+            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
+                self.ndx_stdin = "".join(sys.stdin.readlines()).split()
+
+    def _select_ndx_atgroups(self):
+        self.ndxgs=[]
+        auto_id = 0       # for auto assignment of group ids
+        for gid, ndxprompt in enumerate(self.ndxparms):
+            if gid < self._refng or not self._autondx:
+                if not self.ndx_stdin:
+                    sys.stderr.write("%s:\n" % (ndxprompt))
+                ndx_str = self._getinputline()
+                try: # First try as an integer
+                    self.ndxgs.append(self._ndx_atlists[int(ndx_str)].to_atgroup(self, ndxprompt))
+                except ValueError:
+                    try: # Now as the group's name
+                        self.ndxgs.append(self._ndx_atlists[self._ndx_names.index(ndx_str)].to_atgroup(self, ndxprompt))
+                    except ValueError:
+                        raise KeyError("Group name %s not found in index." % (ndx_str))
+            else:
+                if gid == self._refng:
+                    sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(self._ndx_atlists))
+                self.ndxgs.append(self._ndx_atlists[auto_id].to_atgroup(self, ndxprompt))
+                auto_id += 1
+
     def _getinputline(self):
         while True:
-            if self.stdin:
-                return self.stdin.pop(0)
+            if self.ndx_stdin:
+                return self.ndx_stdin.pop(0)
             elif self.interactive:
-                self.stdin.extend(map(int,raw_input().split()))
+                self.ndx_stdin.extend(raw_input().split())
             else:
                 raise IndexError("\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
 
