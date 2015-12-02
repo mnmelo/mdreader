@@ -651,7 +651,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             elif type(coords) == types.IntType:
                 tjcdx_atgrps = [self.ndxgs[coords]]
             elif isinstance(coords, basestring):
-                tjcdx_atgrps = [self.selectAtoms(coords)]
+                tjcdx_atgrps = [self.select_atoms(coords)]
             else:
                 self._tseries._coords_istuple = True
                 try:
@@ -661,7 +661,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                         elif type(atgrp) == MDAnalysis.core.AtomGroup.AtomGroup:
                             tjcdx_atgrps.append(atgrp)
                         else:
-                            tjcdx_atgrps.append(self.selectAtoms("%s" % atgrp))
+                            tjcdx_atgrps.append(self.select_atoms("%s" % atgrp))
                 except:
                     raise TypeError("Error parsing coordinate groups.\n%r" % sys.exc_info()[1])
 
