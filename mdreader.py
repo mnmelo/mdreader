@@ -501,7 +501,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         if self.mpi and self.hasindex:   # Get ready to broadcast the index list
             if not self.p_id:
-                tmp_ndx = [grp.indices() for grp in self.ndxgs]
+                tmp_ndx = [grp.indices for grp in self.ndxgs]
             else:
                 tmp_ndx = None
             tmp_ndx = self.comm.bcast(tmp_ndx, root=0)
@@ -666,7 +666,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     raise TypeError("Error parsing coordinate groups.\n%r" % sys.exc_info()[1])
 
         # Get the unique list of indices, and the pointers to that list for each requested group.
-        indices = [grp.indices() for grp in tjcdx_atgrps]
+        indices = [grp.indices for grp in tjcdx_atgrps]
         indices_len = [len(ndx) for ndx in indices]
         self._tseries._tjcdx_ndx, self._tseries._tjcdx_relndx = numpy.unique(numpy.concatenate(indices), return_inverse=True)
         self._tseries._tjcdx_relndx = numpy.split(self._tseries._tjcdx_relndx, numpy.cumsum(indices_len[:-1])) 
