@@ -1,1 +1,1 @@
-from mdreader import *
+from .mdreader import *
