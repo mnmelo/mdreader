@@ -416,7 +416,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if version is not None:
-            parser.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%ver,
+            parser.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%version,
                 help = 'Prints the script version and exits.')
         if check_files is not None:
             self.check_files = check_files
