@@ -7,9 +7,12 @@
 """
 Class for the all-too-frequent task of asking for options and reading in trajectories. 
 
-version v2013.03.06
-by Manuel Melo (m.n.melo@rug.nl)
+version v2016.30.06
+by Manuel Melo (m.n.melo@rug.nl) with contribution from Jonathan Barnoud (j.barnoud@rug.n)
 
+The global variable raise_exceptions (default False) controls whether mdreader should handle
+end-user errors on its own by exiting cleanly and replacing a traceback by a neater error
+message, or instead simply raise the exception and let the user script catch it.
 """
 
 # TODO: account for cases where frames have no time (a GRO trajectory, for example).
@@ -24,10 +27,14 @@ import math
 import datetime
 import types
 import multiprocessing
+import textwrap
 
 
-# Static descriptions ##################################################
+# Globals ##############################################################
 ########################################################################
+# Default is to handle own errors, with a neat exit. Change to allow
+#  exceptions to reach the calling code.
+raise_exceptions = False
 
 # Helper functions #####################################################
 ########################################################################
@@ -58,11 +65,17 @@ def concat_tseries(lst, ret=None):
         setattr(ret, attr, numpy.concatenate([getattr(i, attr) for i in lst]))
     return ret
 
+def raise_error(exc, msg):
+    if raise_exceptions:
+        raise exc(msg)
+    else:
+        sys.exit("{}: {}".format(exc.__name__, msg))
+
 def check_file(fname):
     if not os.path.exists(fname):
-        raise IOError('Can\'t find file %s' % (fname))
+        raise_error(IOError, 'Can\'t find file %s' % (fname))
     if not os.access(fname, os.R_OK):
-        raise IOError('Permission denied to read file %s' % (fname))
+        raise_error(IOError, 'Permission denied to read file %s' % (fname))
     return fname
 
 def check_outfile(fname):
@@ -70,12 +83,12 @@ def check_outfile(fname):
     if not dirname:
         dirname = '.'
     if not os.access(dirname, os.W_OK):
-        raise IOError('Permission denied to write file %s' % (fname))
+        raise_error(IOError, 'Permission denied to write file %s' % (fname))
     return fname
 
 def check_positive(val):
     if val < 0:
-        raise ValueError('Argument must be >= 0: %r' % (val))
+        raise_error(ValueError, "Argument '%r' must be >= 0" % (val))
 
 # Workaround for the lack of datetime.timedelta.total_seconds() in python<2.7
 if hasattr(datetime.timedelta, "total_seconds"):
@@ -127,12 +140,71 @@ class Pool():
         self.outqueue.put((num, f(*args)))
 
 
-class ProperFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+#class ProperFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
+class ProperFormatter(argparse.ArgumentDefaultsHelpFormatter):
     """A hackish class to get proper help format from argparse.
 
+    _format_action had to be cloned entirely to allow for indent customization
+    because the implementation is not very modular. Probably will break at some
+    point when argparse internals change...
     """
     def __init__(self, *args, **kwargs):
         super(ProperFormatter, self).__init__(*args, **kwargs)
+
+    def _split_lines(self, text, width):
+        text = text.strip()
+        return textwrap.wrap(text, width) 
+
+    def _format_action(self, action):
+        # determine the required width and the entry label
+        help_position = min(self._action_max_length + 2,
+                            self._max_help_position)
+        help_width = max(self._width - help_position, 11)
+        action_width = help_position - self._current_indent - 2
+        action_header = self._format_action_invocation(action)
+
+
+        # ho nelp; start on same line and add a final newline
+        if not action.help:
+            tup = self._current_indent, '', action_header
+            action_header = '%*s%s\n' % tup
+
+        # short action name; start on the same line and pad two spaces
+        elif len(action_header) <= action_width:
+            tup = self._current_indent, '', action_width, action_header
+            action_header = '%*s%-*s  ' % tup
+            indent_first = 0
+
+        # long action name; start on the next line
+        else:
+            tup = self._current_indent, '', action_header
+            action_header = '%*s%s\n' % tup
+            indent_first = help_position
+
+        # collect the pieces of the action help
+        parts = [action_header]
+
+        # if there was help for the action, add lines of help text
+        if action.help:
+            help_text = self._expand_help(action)
+            if "\t" not in help_text:
+                indent_first += 8
+            help_lines = self._split_lines(help_text, help_width)
+            parts.append('%*s%s\n' % (indent_first, '', help_lines[0]))
+            for line in help_lines[1:]:
+                parts.append('%*s%s\n' % (help_position + 8, '', line))
+
+        # or add a newline if the description doesn't end with one
+        elif not action_header.endswith('\n'):
+            parts.append('\n')
+
+        # if there are any sub-actions, add their help as well
+        for subaction in self._iter_indented_subactions(action):
+            parts.append(self._format_action(subaction))
+
+        # return a single string
+        return self._join_parts(parts)
+
 
 
 class ThenNow:
@@ -281,29 +353,44 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     Argument 'statavg' defines over how many frames to average statistics. Defaults to 100.
     Argument 'internal_argparse' lets the user choose whether they want to let MDreader take care of option handling. Defaults to True. If set to False, a set of default filenames and most other options (starttime, endtime, etc.) will be used. Check functions setargs and add_ndx on how to change these defaults, or directly modify the mdreader.opts object attributes.
 
-
+    The command-line argument list will default to:
     
-    Command-line argument list will default to:
-    
-    usage: %prog% [-h] [-f TRAJ] [-c STRUCT] [-o OUT] [-b TIME] [-e TIME] [-fmn]
-                  [-skip FRAMES] [-v LEVEL]
+    usage: %prog% [-h] [-f [TRAJ [TRAJ ...]]] [-s TOPOL]
+                  [-o OUT] [-b TIME] [-e TIME] [-fmn]
+                  [-skip FRAMES] [-np NPROCS] [-v LEVEL]
+                  [-n [INDEX]]
 
     optional arguments:
-      -h, --help    show this help message and exit
-      -f TRAJ       file	The trajectory to analyze. If multiple files they'll be analyzed concatenated. (default: traj.xtc)
-      -s TOPOL      file	.tpr, .gro, or .pdb file with the same atom numbering as the trajectory. (default: topol.tpr)
-      -o OUT        file	The main data output file. (default: data.xvg)
-      -b TIME       real	Time to begin analysis from. (default: 0)
-      -e TIME       real	Time to end analysis at. (default: inf)
-      -fmn          bool	Whether to interpret -b and -e as frame numbers. (default: False)
-      -skip FRAMES  int 	Number of frames to skip when analyzing. (default: 1)
-      -v LEVEL      enum	Verbosity level. 0:quiet, 1:progress 2:debug (default: 1)
+      -h, --help                    show this help message and exit
+      -f [TRAJ [TRAJ ...]]  file    The trajectory to analyze. If multiple files
+                                    they'll be analyzed concatenated. (default: traj.xtc)
+      -s TOPOL              file    .tpr, .gro, or .pdb file with the same atom
+                                    numbering as the trajectory. (default: topol.tpr)
+      -o OUT                file    The main data output file. (default: data.xvg)
+      -b TIME               real    Time to begin analysis from. (default: 0)
+      -e TIME               real    Time to end analysis at. (default: inf)
+      -fmn                  bool    Whether to interpret -b and -e as frame
+                                    numbers. (default: False)
+      -skip FRAMES          int     Number of frames to skip when analyzing.
+                                    (default: 1)
+      -np NPROCS            int     Number of processes to parallelize over when
+                                    iterating. 1 means serial iteration, and 0 uses the
+                                    OS-reported number of cores. Ignored when using MPI,
+                                    or when the script specifically sets the number of
+                                    parallelization workers. (default: 0)
+      -v LEVEL              enum    Verbosity level. 0:quiet, 1:progress 2:debug
+                                    (default: 1)
+      -n [INDEX]            file    Index file. Defaults to 'index.ndx' if the
+                                    filename is not specified. If this flag is omitted
+                                    altogether index information will be built from
+                                    residue names. (default: None)
 
     where %prog% is the 'prog' argument as supplied during initialization, or sys.argv[0] if none is provided.
     
     After MDreader instantiation the values of the defaults to the arguments can be changed using MDreader.setargs() (also for setting/unsetting automatic file IO checking; see function documentation). If a 'ver' argument is passed to setargs it will be displayed as the program version, and a '-V'/'--version' option for that purpose will be automatically created.
     The arguments for an MDreader instance can also be added or overridden using the add_argument() method (see the argparse documentation).
-    Finally, the iterate() method will iterate over the trajectory according to the supplied options, yielding frames as it goes. You'll probably want to use it as part of a for-loop header.
+    The iterate() method will iterate over the trajectory according to the supplied options, yielding frames as it goes. You'll probably want to use it as part of a for-loop header.
+    argparse deprecates using the 'version' argument to __init__. If you need to set it, use the setargs method.
     
     """
 
@@ -311,12 +398,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.arguments = arguments
         # Some users don't like to have argparse thrown in
         self.internal_argparse = internal_argparse
-        if internal_argparse:
+        if self.internal_argparse:
             # Set these, unless the user has requested them specifically.
             if len(args) < 10:
-                kwargs["conflict_handler"] = kwargs.get("conflict_handler",'resolve') 
+                kwargs.setdefault("conflict_handler", 'resolve') 
             if len(args) < 6:
-                kwargs["formatter_class"] = kwargs.get("formatter_class",ProperFormatter) 
+                kwargs.setdefault("formatter_class", ProperFormatter) 
             argparse.ArgumentParser.__init__(self, *args, **kwargs)
             self.check_files = True # Whether to check for readability and writability of input and output files.
         else:
@@ -373,13 +460,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     @property
     def nframes(self):
         if self._nframes is None:
-            if not self._parsed:
-                self.do_parse()
+            self.ensure_parsed()
             # Trajectory indexing can be slow. No need to do for every MPI worker: we just pass the offsets around.
             if not self.p_id or not self.mpi:
                 self._nframes = len(self.trajectory)
                 if self._nframes is None or self._nframes < 1:
-                    raise IOError('No frames to be read.')
+                    raise_error(IOError, 'No frames to be read.')
             if self.mpi:
                 if hasattr(self.trajectory, "_TrjReader__offsets"):
                     self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
@@ -390,11 +476,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     self._nframes = len(self.trajectory)
         return self._nframes
 
-    def setargs(self, s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, version=None, check_files=None):
+    def setargs(self, s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'), skip=1, np=0, v=1, version=None, check_files=None):
         """ This function allows the modification of the default parameters of the default arguments without having
-            to go through the hassle of overriding the args in question. Besides check_files (see below) the arguments to this function are self-explanatory
-            and will override the defaults of the corresponding options. These defaults are taken even when internal_argparse has been set to False.
-            check_files (also accessible via MDreader_obj.check_files) controls whether checks are performed on the readability and writabilty of the input/output files defined here (default behavior is to check).
+            to go through the hassle of overriding the args in question. The arguments to this function will override the defaults
+            of the corresponding options. These defaults are taken even when internal_argparse has been set to False.
+            In the particular case of the 'o' and 'np' arguments one can pass 'None' to hide the option. Check the
+            set_parallel_parms method on how to set a specific parallelization number.
+            check_files (also accessible via MDreader_obj.check_files) controls whether checks are performed on the readability and
+            writabilty of the input/output files defined here (default behavior is to check).
         """
         # Slightly hackish way to avoid code duplication
         parser = self if self.internal_argparse else self._dummyopts
@@ -403,8 +492,12 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'file\tThe trajectory to analyze. If multiple files they\'ll be analyzed concatenated.')
         parser.add_argument('-s', metavar='TOPOL', dest="topol", default=s,
                 help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
-        parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
-                help = 'file\tThe main data output file.')
+        if o is None:
+            parser.add_argument('-o', metavar='OUT', dest='outfile', default='data.xvg',
+                    help = argparse.SUPPRESS)
+        else:
+            parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
+                    help = 'file\tThe main data output file.')
         parser.add_argument('-b', metavar='TIME', type=float, dest='starttime', default=b,
                 help = 'real\tTime to begin analysis from.')
         parser.add_argument('-e', metavar='TIME', type=float, dest='endtime', default=e,
@@ -413,6 +506,14 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                 help = 'bool\tWhether to interpret -b and -e as frame numbers.')
         parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tNumber of frames to skip when analyzing.')
+        if np is None:
+            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=0,
+                    help = argparse.SUPPRESS)
+        else:
+            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=np,
+                    help = 'int \tNumber of processes to parallelize over when iterating. 1 means serial '
+                    'iteration, and 0 uses the OS-reported number of cores. Ignored when using MPI, or when '
+                    'the script specifically sets the number of parallelization workers.')
         parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if version is not None:
@@ -459,6 +560,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.ndxparms = ndxparms
         self.smartindex = smartindex
         
+    def ensure_parsed(self):
+        if not self._parsed:
+            self.do_parse()
+
     def do_parse(self):
         """ Parses the command-line arguments according to argparse and does some basic sanity checking on them. It also prepares some argument-dependent loop variables.
         If it hasn't been called so far, do_parse() will be called by the iterate() method, or when trying to access attributes that require it.
@@ -467,24 +572,28 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         """
         if self.internal_argparse:
             self.opts = self.parse_args(self.arguments)
+            # We find the version string in the parser _actions. Somewhat fragile.
+            for action in self._actions:
+                if isinstance(action, argparse._VersionAction) and self.version is None:
+                    self.version = action.version
         else:
             self.opts = self._dummyopts
-
         if self.mpi:
             from mpi4py import MPI
             self.comm = MPI.COMM_WORLD
             self.p_id = self.comm.Get_rank()
-            self.p_num = self.comm.Get_size()
 
         if self.opts.verbose and self.p_id == 0:
             sys.stderr.write("Loading...\n")
-        ## Post option handling
+        ## Post option handling. outfile and parallel might be unset.
         if self.check_files:
             map(check_file,(self.opts.topol,)+tuple(self.opts.infile))
-            map(check_outfile,(self.opts.outfile,))
-            map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip))
+            check_outfile(self.opts.outfile)
+        map(check_positive,(self.opts.starttime,self.opts.endtime,self.opts.skip, self.opts.parallel, self.opts.parallel))
         if self.opts.endtime < self.opts.starttime:
-            raise ValueError('Endtime lower than starttime.')
+            raise_error(ValueError, 'Endtime lower than starttime.')
+        if not self.p_parms_set:
+            self.set_parallel_parms(self.opts.parallel)
         MDAnalysis.Universe.__init__(self, self.opts.topol, *self.opts.infile)
 
         self.hastime = True
@@ -528,11 +637,10 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
           MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an absolute, albeit estimated, per-frame time.
 
         """
-        if not self._parsed:
-            self.do_parse()
+        self.ensure_parsed()
 
         if not self.p_parms_set:
-            self._set_parallel_parms(False) # By default do a serial iteration. _set_parallel_parms should have been set by whichever internal function called iterate() instead.
+            self.set_parallel_parms(1) # By default do a serial iteration. set_parallel_parms should have been set by whichever internal function called iterate() instead.
         verb = self.opts.verbose and (not self.parallel or self.p_id==0)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
@@ -636,10 +744,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
 
         """
         # First things first
-        if not self._parsed:
-            self.do_parse()
-        if not self.p_parms_set:
-            self._set_parallel_parms(parallel)
+        self.ensure_parsed()
 
         self._tseries = Timeseries()
         tjcdx_atgrps = []
@@ -692,7 +797,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         if not self.p_mpi:
             avail_mem = memoryCheck()
             if 2*mem/(1024**2) > avail_mem.value:
-                raise EnvironmentError("You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
+                raise_error(EnvironmentError, "You are attempting to read approximately %dMB of coordinates/values but your system only seems to have %dMB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
         if not self.p_smp:
@@ -717,7 +822,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
     def do_in_parallel(self, fn, *args, **kwargs):
         """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
         args and kwargs should be an iterable, resp. a dictionary, of arguments that will be passed (with the star, resp. double-star, operator) to fn. Default to the empty tuple and empty dict.
-        parallel can be set to False to force serial behavior.
+        parallel can be set to False to force serial behavior. Setting it to True forces default parallelization behavior, overriding previous settings of self.p_num.
         Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
 
         """
@@ -725,16 +830,16 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         try:
             parallel = kwargs.pop("parallel")
         except KeyError:
-            parallel = True
+            force_p_recheck = False
         else:
+            nprocs = int(not parallel) # parallel=True (resp. False) becomes nprocs=0 (resp. 1)
             force_p_recheck = True
         self.p_args = args
         self.p_kwargs = kwargs
 
-        if not self._parsed:
-            self.do_parse()
-        if not self.p_parms_set or force_p_recheck:
-            self._set_parallel_parms(parallel)
+        self.ensure_parsed()
+        if force_p_recheck:
+            self.set_parallel_parms(nprocs)
 
         if not self.p_smp:
             if not self.p_mpi:
@@ -836,7 +941,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                rdr.dcdfile.close()
                rdr.dcdfile = open(self.trajectory.filename, 'rb')
            else:
-               raise AttributeError("Don't know how to get a new file descriptor for %s trajectory reader." % rdr.format)
+               raise_error(AttributeError, "Don't know how to get a new file descriptor for the %s trajectory format. You'll have to skip parallelization." % rdr.format)
 
     def _set_frameparms(self):
         if self.opts.asframenum:
@@ -847,9 +952,9 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             self._endframe=int(min((self.opts.endtime-self.trajectory[0].time)/self.trajectory.dt,self.nframes-1))
         if self._startframe > self.nframes:
             if self.opts.asframenum:
-                raise ValueError("You requested to start at frame %d but trajectory only has %d frames." % (self.opts.starttime, self.nframes))
+                raise_error(ValueError, "You requested to start at frame %d but trajectory only has %d frames." % (self.opts.starttime, self.nframes))
             else:
-                raise ValueError("You requested to start at time %f ps but trajectory only goes up to %f ps." % (self.opts.starttime, (self.nframes-1)*self.trajectory.dt))
+                raise_error(ValueError, "You requested to start at time %f ps but trajectory only goes up to %f ps." % (self.opts.starttime, (self.nframes-1)*self.trajectory.dt))
         self._totalframes = int(math.ceil(float(self.endframe-self.startframe+1)/self.opts.skip))
 
     def _set_iterparms(self):
@@ -890,16 +995,34 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         self.i_parms_set = True
 
 
-    def _set_parallel_parms(self, parallel=True):
-        self.p_mpi = parallel and self.mpi
-        self.p_smp = parallel and not self.mpi
-        self.parallel = parallel
+    def set_parallel_parms(self, nprocs=None):
+        """Resets parallelization parameters. Use to specifiy the number of processes.
+        The nprocs argument sets how many processors to use. 0 defaults to the OS-reported
+        number, and 1 sets up serial iteration. If nprocs is left at None, then the last
+        used number of processors will be re-used (behaving like nprocs=0 if not yet set).
+        """
+        if self.p_num is None or nprocs is not None:
+            self.p_num = nprocs
+        self.parallel = self.p_num != 1
+        self.p_mpi = self.parallel and self.mpi
+        self.p_smp = self.parallel and not self.mpi
         if self.parallel:
             if self.p_mpi:
                 self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirun -np nprocs
-            elif self.p_smp and self.p_num is None:
+            elif self.p_smp and not self.p_num:
                 self.p_num = multiprocessing.cpu_count()
+        if self.p_num == 1: # For single-core machines, or single-process MPI runs
+            self.parallel = False
+            self.p_mpi = False
+            self.p_smp = False
         self.p_parms_set = True
+
+    def info_header(self, line_prefix=''):
+        self.ensure_parsed()
+        header = "{}{} {}\n".format(line_prefix, self.prog, " ".join(self.arguments))
+        if self.version is not None:
+            header = "{}{} {}\n".format(line_prefix, self.prog, self.version) + header
+        return header
 
     def _get__ndx_atgroups(self):
         if self.opts.ndx is not None:
@@ -982,7 +1105,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
                     try: # Now as the group's name
                         self.ndxgs.append(self._ndx_atlists[self._ndx_names.index(ndx_str)].to_atgroup(self, ndxprompt))
                     except ValueError:
-                        raise KeyError("Group name %s not found in index." % (ndx_str))
+                        raise_error(KeyError, "Group name %s not found in index." % (ndx_str))
             else:
                 if gid == self._refng:
                     sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(self._ndx_atlists))
@@ -996,7 +1119,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
             elif self.interactive:
                 self.ndx_stdin.extend(raw_input().split())
             else:
-                raise IndexError("\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
+                raise_error(IndexError, "\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
 
 class SimpleReader(MDreader):
     """A shortcut class inheriting from MDreader. Creates an MDreader instance without argparse inheriting.

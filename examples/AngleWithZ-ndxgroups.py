@@ -21,7 +21,7 @@ angles = numpy.empty((len(md),nbonds)) # Angle data will be appended as the traj
 
 for fm in md.iterate():
     # We can now refer to the atom groups according to their index.
-    vecs = md.ndxgs[1].coordinates()-md.ndxgs[0].coordinates()
+    vecs = md.ndxgs[1].positions - md.ndxgs[0].positions
     norms = numpy.hypot.reduce(vecs, axis=1)
     angles[fm.frame-1,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
 

@@ -18,7 +18,7 @@ angles = numpy.empty((len(md),nbonds)) # Angle data will be appended as the traj
 
 for fm in md.iterate():
     # The power of NumPy
-    vecs = topPO4.coordinates()-topNC3.coordinates()        # vecs'  shape is (700,3)
+    vecs = topPO4.positions - topNC3.positions              # vecs'  shape is (700,3)
     norms = numpy.hypot.reduce(vecs, axis=1)                # norms' shape is (700,)
     frame_angs = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms) # ":" notation: all the values of the axis
     angles[fm.frame-1,:] = frame_angs                       # direct assigment to the results array (could be condensed with previous line).

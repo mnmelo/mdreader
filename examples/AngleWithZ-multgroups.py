@@ -19,7 +19,7 @@ angles = numpy.empty((len(md),len(md.ndxgs)-1,nbonds)) # Angle data will be appe
                                                        #  we have nbonds * number of groups besides the first * number of frames
 for fm in md.iterate():
     for i,grp in enumerate(md.ndxgs[1:]):  # md.ndxgs[0] is the vertex reference
-        vecs = md.ndxgs[0].coordinates()-grp.coordinates()
+        vecs = md.ndxgs[0].positions - grp.positions
         norms = numpy.hypot.reduce(vecs, axis=1)
         angles[fm.frame-1,i,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)   # place the result at the correct frame and group
 

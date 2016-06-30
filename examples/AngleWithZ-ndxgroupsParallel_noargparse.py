@@ -21,7 +21,7 @@ if len(md.ndxgs[0]) != len(md.ndxgs[1]):
 # The function that will be called every frame, distributed by all workers.
 #  Only the returned values will be available to the calling script.
 def calc_frame_angles():
-    vecs = md.ndxgs[1].coordinates()-md.ndxgs[0].coordinates()
+    vecs = md.ndxgs[1].positions - md.ndxgs[0].positions
     norms = numpy.hypot.reduce(vecs, axis=1)
     return (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
 
