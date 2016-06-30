@@ -409,6 +409,7 @@ class MDreader(MDAnalysis.Universe, argparse.ArgumentParser):
         else:
             self.check_files = False
             self._dummyopts = DummyParser()
+        self.version = None
         self.setargs()
         self._parsed = False
         self.hasindex = False
