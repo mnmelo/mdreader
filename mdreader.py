@@ -469,21 +469,34 @@ class MDreader(MDAnalysis.Universe):
     
     """
 
-    def __new__(cls, *args, **kwargs):
-        try:
-            internal_argparse = kwargs.get('internal_argparse', args[3]) 
-        except IndexError:
-            internal_argparse = True
-        if internal_argparse:
-            newcls = type('MDreader', (MDreader, argparse.ArgumentParser), {})
-        else:
-            newcls = type('MDreader', (MDreader, DummyParser), {})
-        return super(MDreader, newcls).__new__(newcls, *args, **kwargs)
+    internal_argparse=False
 
-    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, internal_argparse=True, *args, **kwargs):
+    def __new__(cls, *args, **kwargs):
+        bases = (cls,) + cls.__bases__
+        try:
+            cls.internal_argparse = kwargs.get('internal_argparse', args[3]) 
+        except IndexError:
+            cls.internal_argparse = True
+        if cls.internal_argparse:
+            newcls = type(cls.__name__, bases + (argparse.ArgumentParser,), {})
+        else:
+            newcls = type(cls.__name__, bases + (DummyParser,), {})
+        return super(MDreader, newcls).__new__(newcls)
+
+    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, *args, **kwargs):
+        """ Sets up the MDreader object, but doesn't initialize most heavy stuff.
+
+        Option parsing and topology/trajectory loading is left to be done on a need basis.
+        keyword 'arguments' allows one to specify a custom list of CLI-like arguments.
+        keyword 'outstats' controls how often to report performance statistics.
+        keyword 'statavg' controls over how many frames to accumulate performance statistics.
+        Finally, keyword 'internal_argparse' allows one to specify whether to use argparse for
+        option parsing (set to True) or to use a DummyParser instead (set to False). In the
+        latter case one must later supply all needed options by hand, via the setargs method.
+        """
         self.arguments = arguments
         # Some users don't like to have argparse thrown in
-        self.internal_argparse = internal_argparse
+        #self.internal_argparse is set at the class and __new__ level
         if self.internal_argparse:
             # Set these, unless the user has requested them specifically.
             if len(args) < 10:
@@ -1258,8 +1271,11 @@ class SimpleReader(MDreader):
         ndx=None, ndxparms=None, ng=None, smartindex=True
     Argument check_files (default=None) has the same meaning as for the setargs function.
     """
+
+    internal_argparse=False
+
     def __init__(self, s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, check_files=None, ndx=None, ndxparms=None, ng=None, smartindex=True):
-        MDreader.__init__(self, internal_argparse=False) 
+        super(SimpleReader, self).__init__() 
         self.setargs(s=s, f=f, o=o, b=b, e=e, skip=skip, v=v, version=None, check_files=check_files)
         if ndxparms or ng:
             self.add_ndx(ndxparms=ndxparms, ndxdefault=ndx, ng=ng, smartindex=smartindex)
@@ -1271,7 +1287,7 @@ class DefaultReader(MDreader):
     If any arguments are present, they'll be passed to add_ndx, for the creation of an index. Refer to that function's documentation for the relevant arguments.
     """
     def __init__(self, *args, **kwargs):
-        MDreader.__init__(self) 
+        super(DefaultReader, self).__init__() 
         if args or kwargs:
             self.add_ndx(*args, **kwargs)
 
