@@ -376,7 +376,7 @@ class Timeseries():
 
 class DummyParser():
     def __init__(self, *args, **kwargs):
-        self._opts = object()
+        self._opts = argparse.Namespace()
 
     def add_argument(self, *args, **kwargs):
         dest = kwargs.get('dest')
@@ -386,7 +386,7 @@ class DummyParser():
                 val = [kwargs.get('default')]
             else:
                 val = kwargs.get('default')
-            self.__dict__[dest] = val 
+            setattr(self._opts, dest, val)
 
     def parse_args(self, *args, **kwargs):
         return self._opts
@@ -469,14 +469,14 @@ class MDreader(MDAnalysis.Universe):
     
     """
 
-    internal_argparse=False
+    internal_argparse = True
 
     def __new__(cls, *args, **kwargs):
         bases = (cls,) + cls.__bases__
         try:
-            cls.internal_argparse = kwargs.get('internal_argparse', args[3]) 
-        except IndexError:
-            cls.internal_argparse = True
+            cls.internal_argparse = kwargs['internal_argparse']
+        except KeyError:
+            pass
         if cls.internal_argparse:
             newcls = type(cls.__name__, bases + (argparse.ArgumentParser,), {})
         else:
@@ -506,8 +506,8 @@ class MDreader(MDAnalysis.Universe):
             argparse.ArgumentParser.__init__(self, *args, **kwargs)
             self.check_files = True # Whether to check for readability and writability of input and output files.
         else:
+            DummyParser.__init__(self, *args, **kwargs)
             self.check_files = False
-            self._dummyopts = DummyParser()
         self.version = None
         self.setargs()
         self._parsed = False
@@ -590,7 +590,7 @@ class MDreader(MDAnalysis.Universe):
             writabilty of the input/output files defined here (default behavior is to check).
         """
         # Slightly hackish way to avoid code duplication
-        parser = self if self.internal_argparse else self._dummyopts
+        parser = self #if self.internal_argparse else self._dummyopts
         # Note: MUST always use dest as a kwarg, to satisfy the DummyParser. Anything without 'dest' will be ignored by it (only relevant when the user sets internal_argparse to False)
         parser.add_argument('-f', metavar='TRAJ', dest="infile", default=f, nargs="*",
                 help = 'file\tThe trajectory to analyze. If multiple files they\'ll be analyzed concatenated.')
