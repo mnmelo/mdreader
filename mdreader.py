@@ -98,6 +98,7 @@ def _do_be_flags(val, default, asframenum):
         else:
             val = float(val)
         check_positive(val)
+        return val
 
 def _parallel_launcher(rdr, w_id):
     """ Helper function for the parallel execution of registered functions.
