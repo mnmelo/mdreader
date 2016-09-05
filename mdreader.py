@@ -97,7 +97,7 @@ def _do_be_flags(val, default, asframenum):
             val = int(val)
         else:
             val = float(val)
-        check_positive(val)
+        #check_positive(val)
         return val
 
 def _parallel_launcher(rdr, w_id):
@@ -691,8 +691,10 @@ class MDreader(MDAnalysis.Universe):
         if self.opts.verbose and self.p_id == 0:
             sys.stderr.write("Loading...\n")
         ## Post option handling. outfile and parallel might be unset.
+        if isinstance(self.opts.infile, basestring):
+            self.opts.infile = [self.opts.infile,]
         if self.check_files:
-            map(check_file,(self.opts.topol,)+tuple(self.opts.infile))
+            map(check_file, [self.opts.topol] + self.opts.infile)
             check_outfile(self.opts.outfile)
         check_positive(self.opts.skip, strict=True)
         check_positive(self.opts.parallel)
@@ -701,8 +703,8 @@ class MDreader(MDAnalysis.Universe):
         self.opts.starttime = _do_be_flags(self.opts.starttime, _default_opts['b'], self.opts.asframenum)
         self.opts.endtime = _do_be_flags(self.opts.endtime, _default_opts['e'], self.opts.asframenum)
 
-        if self.opts.endtime is not None and self.opts.endtime < self.opts.starttime:
-            raise_error(ValueError, 'Specified end time/frame lower than start time/frame.')
+        #if self.opts.endtime is not None and self.opts.endtime < self.opts.starttime:
+        #    raise_error(ValueError, 'Specified end time/frame lower than start time/frame.')
 
         if not self.p_parms_set:
             self.set_parallel_parms(self.opts.parallel)
@@ -716,6 +718,8 @@ class MDreader(MDAnalysis.Universe):
             self.opts.asframenum = True
 
         self._parsed = True
+        self._set_frameparms()
+
         if not self.p_id:  # Either there is no MPI, or we're root
             if self.hasindex:
                 self._parse_ndx()
@@ -1066,22 +1070,37 @@ class MDreader(MDAnalysis.Universe):
 
     def _set_frameparms(self):
         if self.opts.asframenum:
-            self._startframe = 0 if self.opts.starttime is None else self.opts.starttime
-            self._endframe = self.nframes-1 if self.opts.endtime is None else min(self.nframes-1, self.opts.endtime)
+            if self.opts.starttime is None:
+                self._startframe = 0
+            elif self.opts.starttime < 0:
+                self._startframe = self.nframes + self.opts.starttime
+            else:
+                self._startframe = self.opts.starttime
+            #
+            if self.opts.endtime is None:
+                self._endframe = self.nframes-1
+            elif self.opts.endtime < 0:
+                self._endframe = self.nframes + self.opts.starttime
+            else:
+                self._endframe = min(self.nframes-1, self.opts.endtime)
         else:
             # We bend over backwards here with np.rint to ensure the correct int ceil (python 2.7 doesn't have it yet).
             t0 = self.trajectory[0].time
             if self.opts.starttime is None:
                 self._startframe = 0
+            elif self.opts.starttime < 0.:
+                self._startframe = self.nframes + int(math.ceil(self.opts.starttime/self.trajectory.dt)) 
             elif t0 - self.opts.starttime > 1e-7:
                 raise_error(ValueError, "You requested to start at time %f but the trajectory "
                                         "starts already at time %f." % (self.opts.starttime, t0))
             else:
                 self._startframe = int(np.rint(math.ceil((self.opts.starttime-t0)/self.trajectory.dt)))
-
+            #
             if self.opts.endtime is None:
                 self._endframe = self.nframes-1
-            elif self.opts.endtime < t0:
+            elif self.opts.endtime < 0.:
+                self._endframe = self.nframes + int(math.ceil(self.opts.endtime/self.trajectory.dt)) 
+            elif t0 - self.opts.endtime > 1e-7:
                 raise_error(ValueError, "Specified end time lower (%f ps) than the trajectory start time (%f ps)." % (self.opts.endtime, t0))
             else:
                 self._endframe = min(int(np.rint(math.ceil((self.opts.endtime-t0)/self.trajectory.dt))), self.nframes-1)
@@ -1093,6 +1112,8 @@ class MDreader(MDAnalysis.Universe):
                 raise_error(ValueError, "You requested to start at time %f ps but the trajectory only goes up to %f ps." % (self.opts.starttime, (self.nframes-1)*self.trajectory.dt))
         if self._endframe < self._startframe:
             raise_error(ValueError, 'Specified end time/frame lower than start time/frame.')
+        if self._endframe < 0 or self._startframe < 0:
+            raise_error(ValueError, 'Resulting start/end frame lower than 0.')
 
         self._totalframes = int(np.rint(math.ceil(float(self._endframe - self._startframe+1)/self.opts.skip)))
 
