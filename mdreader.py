@@ -614,7 +614,7 @@ class MDreader(MDAnalysis.Universe):
         parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
                 help = 'int \tInterval between frames when analyzing.')
         if np is None:
-            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=0,
+            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=_default_opts['np'],
                     help = argparse.SUPPRESS)
         else:
             parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=np,
@@ -739,10 +739,11 @@ class MDreader(MDAnalysis.Universe):
         self._ndx_input()
         self._select_ndx_atgroups()
 
-    def iterate(self):
+    def iterate(self, p=None):
         """Yields snapshots from the trajectory according to the specified start and end boundaries and skip.
         Calculations on AtomSelections will automagically reflect the new snapshot, without needing to refer to it specifically.
-        Output and parallelization will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
+        Argument p sets the number of workers, overriding any already set. Note that MDreader is set to use all cores by default, so if you want serial iteration you must pass p=1.
+        Other output and parallelization behavior will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
           MDreader.progress (default: None) can be one of 'frame', 'pct', 'both', 'empty', or None. It sets the output to frame numbers, %% progress, both, or nothing. If set to None behavior defaults to 'frame', or 'pct' when iterating in parallel block mode.
           MDreader.p_mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
           When MDreader.p_mode=='block' MDreader.p_overlap (default: 0) sets how many frames blocks overlap, to allow multi frame analyses (say, an average) to pick up earlier on each block.
@@ -755,8 +756,10 @@ class MDreader(MDAnalysis.Universe):
         """
         self.ensure_parsed()
 
+        if p is not None:
+            self.set_parallel_parms(p)
         if not self.p_parms_set:
-            self.set_parallel_parms(1) # By default do a serial iteration. set_parallel_parms should have been set by whichever internal function called iterate() instead.
+            self.set_parallel_parms()
         verb = self.opts.verbose and (not self.parallel or self.p_id==0)
         # We're only outputting after each worker has picked up on the pre-averaging frames
         self.i_overlap = True
