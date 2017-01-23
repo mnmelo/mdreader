@@ -19,9 +19,6 @@ md.add_argument("-prec", dest="prec",type=int,default=2,help="Trajectory precisi
 md.add_argument("-oplot", dest="oplot",default="dens",help="Output plots filename (no extension)")
 md.add_ndx(ng='n')
 
-# Read the files
-md.do_parse()
-
 tseries = md.timeseries(md.ndxgs[0],props="dimensions", x=False, y=False)
 box_z = tseries.dimensions[:,2]/10
 z = tseries.coords.reshape(len(md),len(md.ndxgs[0]))/10

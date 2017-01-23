@@ -12,16 +12,19 @@ See the add_ndx documentation from mdreader.
 md = mdreader.MDreader()
 # We'll have a user-set number of groups besides the 1st.
 md.add_ndx(ng="n", ndxparms=["Select vertex", "Select atoms"])
-md.do_parse()
 
 nbonds = len(md.ndxgs[0])
-angles = numpy.empty((len(md),len(md.ndxgs)-1,nbonds)) # Angle data will be appended as the trajectory is parsed
-                                                       #  we have nbonds * number of groups besides the first * number of frames
+# The result array is now 3-dimensional
+angles = numpy.empty((len(md),len(md.ndxgs)-1,nbonds)) # Angle data will be appended as the trajectory
+                                                       # is parsed
+                                                       # we have nbonds * number of groups besides the
+                                                       # first * number of frames
 for fm in md.iterate():
     for i,grp in enumerate(md.ndxgs[1:]):  # md.ndxgs[0] is the vertex reference
         vecs = md.ndxgs[0].positions - grp.positions
         norms = numpy.hypot.reduce(vecs, axis=1)
-        angles[fm.frame-1,i,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)   # place the result at the correct frame and group
+        # place the result at the correct frame and group
+        angles[fm.frame-1,i,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
 
 # numpy can't print as text arrays with dimensions > 2. We'll condense the last two just as an example. (the angles of each group are now together)
 numpy.savetxt(md.opts.outfile, angles.reshape(len(md), (len(md.ndxgs)-1)*nbonds))

@@ -11,7 +11,6 @@ See the docstrings of the timeseries() function in mdreader.
 
 md = mdreader.MDreader()
 md.add_ndx(ndxparms=["Test group 1", "Test group 2", "Test group 3"])
-md.do_parse()
 
 tseries = md.timeseries()   # tseries.coords is a coordinates array of the entire system.
                             #  shape=(numframes, numatoms, 3)
@@ -35,7 +34,7 @@ tseries = md.timeseries((2,"name CA"))  # tseries.coords is a tuple of two eleme
                                         #  array of the atoms in the third chosen index group, and that
                                         #  of the atoms with name "CA".
 
-sel = md.selectAtoms("name CA")
+sel = md.select_atoms("name CA")
 tseries = md.timeseries((2,sel))  # same as above 
 
 tseries = md.timeseries(props="dimensions") # tseries gets a 'dimensions' attribute; tseries.dimensions 

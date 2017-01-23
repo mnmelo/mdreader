@@ -10,7 +10,6 @@ See the add_ndx documentation from mdreader.
 md = mdreader.MDreader()
 # An index will now be expected from the user
 md.add_ndx(ndxparms=["Select cholines", "Select phosphates"]) 
-md.do_parse()
 
 nbonds = len(md.ndxgs[0])
 if len(md.ndxgs[0]) != len(md.ndxgs[1]):
@@ -23,6 +22,6 @@ for fm in md.iterate():
     # We can now refer to the atom groups according to their index.
     vecs = md.ndxgs[1].positions - md.ndxgs[0].positions
     norms = numpy.hypot.reduce(vecs, axis=1)
-    angles[fm.frame-1,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
+    angles[fm.frame,:] = (180/numpy.pi)*numpy.arccos(vecs[:,2]/norms)
 
 numpy.savetxt(md.opts.outfile, angles)

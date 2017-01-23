@@ -12,7 +12,6 @@ md = mdreader.MDreader(internal_argparse=False)
 md.setargs(s="start.gro")
 # An index will now be expected from the user
 md.add_ndx(ndxparms=["Select cholines", "Select phosphates"], ndxdefault='index.ndx') 
-md.do_parse()
 
 nbonds = len(md.ndxgs[0])
 if len(md.ndxgs[0]) != len(md.ndxgs[1]):
