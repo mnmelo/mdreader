@@ -555,6 +555,8 @@ class MDreader(MDAnalysis.Universe):
             except AttributeError:
                 self._set_frameparms()
                 return getattr(self, "_"+name)
+        if name == "_anchor_uuid":
+            raise AttributeError
         if not self._parsed:
             self.do_parse()
             return getattr(self, name)
@@ -1001,7 +1003,6 @@ class MDreader(MDAnalysis.Universe):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
-
         if self.p_smp:
         # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
         # This must be the first thing after entering parallel land.
