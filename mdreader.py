@@ -881,7 +881,7 @@ class MDreader(MDAnalysis.Universe):
         if coords is None and props is None:
             tjcdx_atgrps = [self.atoms]
         elif coords is not None:
-            if type(coords) == MDAnalysis.core.AtomGroup.AtomGroup:
+            if isinstance(coords, MDAnalysis.core.groups.AtomGroup):
                 tjcdx_atgrps = [coords]
             elif type(coords) == types.IntType:
                 tjcdx_atgrps = [self.ndxgs[coords]]
@@ -907,7 +907,7 @@ class MDreader(MDAnalysis.Universe):
         self._tseries._tjcdx_relndx = np.split(self._tseries._tjcdx_relndx, np.cumsum(indices_len[:-1])) 
 
         self._tseries._xyz = (x,y,z)
-        mem = self.atoms[self._tseries._tjcdx_ndx].coordinates()[0].nbytes*sum(self._tseries._xyz)
+        mem = self.atoms[self._tseries._tjcdx_ndx].positions[0].nbytes*sum(self._tseries._xyz)
 
         if props is not None:
             if isinstance(props, basestring):
@@ -1050,7 +1050,7 @@ class MDreader(MDAnalysis.Universe):
         if not self.i_unemployed:
             for frame in self.iterate():
                 if self._tseries._cdx is not None:
-                    self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].coordinates()[:,np.where(self._tseries._xyz)[0]]
+                    self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].positions[:,np.where(self._tseries._xyz)[0]]
                 for attr in self._tseries._props:
                     getattr(self._tseries, attr)[self.iterframe,...] = getattr(self.trajectory.ts, attr)
         return self._tseries
