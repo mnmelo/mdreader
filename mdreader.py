@@ -8,7 +8,7 @@
 Class for the all-too-frequent task of asking for options and reading in trajectories. 
 
 version v2016.30.06
-by Manuel Melo (m.n.melo@rug.nl) with contribution from Jonathan Barnoud (j.barnoud@rug.n)
+by Manuel Melo (m.n.melo@rug.nl) with contribution from Jonathan Barnoud (j.barnoud@rug.nl)
 
 The global variable raise_exceptions (default False) controls whether mdreader should handle
 end-user errors on its own by exiting cleanly and replacing a traceback by a neater error
@@ -395,7 +395,7 @@ class DummyParser():
 
 class _NamedAtlist(np.ndarray):
     """Adds a name to a list of indices, as a property."""
-    def __new__(cls, indices, name, attr='ndx_name'):
+    def __new__(cls, indices, name, attr='_ndx_name'):
         if isinstance(indices, cls):
             ret = indices
         if isinstance(indices, np.ndarray):
@@ -405,7 +405,7 @@ class _NamedAtlist(np.ndarray):
         ret._xtra_attr = attr
         setattr(ret, attr, name)
         return ret
-    def to_atgroup(self, univ, name="", attr='ndx_prompt'):
+    def to_atgroup(self, univ, name="", attr='_ndx_prompt'):
         atgp = univ.atoms[self]
         setattr(atgp, self._xtra_attr, getattr(self, self._xtra_attr))
         if name:
@@ -1212,7 +1212,7 @@ class MDreader(MDAnalysis.Universe):
             resnames = np.unique(self.atoms.resnames)
             self._ndx_atlists = [_NamedAtlist(self.atoms.indices, "System")]
             self._ndx_atlists.extend([_NamedAtlist(self.select_atoms("resname %s" % (rn,)).indices, rn) for rn in resnames ])
-        self._ndx_names = [ndx.ndx_name for ndx in self._ndx_atlists]
+        self._ndx_names = [ndx._ndx_name for ndx in self._ndx_atlists]
 
     def _ndx_prepare(self):
         """Prepares number and content of index prompt strings. Decides on whether to autoassign index groups."""
@@ -1245,11 +1245,11 @@ class MDreader(MDAnalysis.Universe):
         self.ndx_stdin = []
         if sys.stdin.isatty():
             self.interactive = True
-            maxlen = str(max(map(lambda x:len(x.ndx_name), self._ndx_atlists)))
+            maxlen = str(max(map(lambda x:len(x._ndx_name), self._ndx_atlists)))
             maxidlen = str(len(str(len(self._ndx_atlists)-1)))
             maxlenlen = str(max(map(len, (map(str, (map(len, self._ndx_atlists)))))))
             for ndxgid, hd in enumerate(self._ndx_atlists):
-                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd.ndx_name, len(hd)))
+                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd._ndx_name, len(hd)))
             sys.stderr.write("\n")
         else:
             self.interactive = False
