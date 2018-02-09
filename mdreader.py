@@ -938,7 +938,9 @@ class MDreader(MDAnalysis.Universe):
                     tseries = concat_tseries(tseries)
         else:
             pool = Pool(processes=self.p_num)
-            concat_tseries(pool.map(_parallel_extractor, [(self, i) for i in range(self.p_num)]), tseries)
+            concat_tseries(pool.map(_parallel_extractor,
+                                    [(self, i) for i in range(self.p_num)]),
+                           tseries)
 
         if self.p_mpi and not self.p_mpi_keep_workers_alive and self.p_id != 0:
             sys.exit(0)
@@ -950,13 +952,33 @@ class MDreader(MDAnalysis.Universe):
 
 
     def do_in_parallel(self, fn, *args, **kwargs):
-        """ Applies fn to every frame, taking care of parallelization details. Returns a list with the returned elements, in order.
-        args and kwargs should be an iterable, resp. a dictionary, of arguments that will be passed (with the star, resp. double-star, operator) to fn. Default to the empty tuple and empty dict.
-        parallel can be set to False to force serial behavior. Setting it to True forces default parallelization behavior, overriding previous settings of self.p_num.
-        Refer to the documentation on MDreader.iterate() for information on which MDreader attributes to set to change default parallelization options.
+        """ Applies fn to every frame, taking care of parallelization details.
+        
+        Returns a list with the returned elements, in order.
+        args and kwargs should be an iterable, resp. a dictionary, of arguments
+            that will be passed (with the star, resp. double-star, operator) to
+            fn. Default to the empty tuple and empty dict.
+        parallel can be set to False to force serial behavior. Setting it to
+            True forces default parallelization behavior, overriding previous
+            settings of self.p_num.
+        ret_type can be set to "last_per_worker" to specify that only the last
+            frame result per worker be returned. This is useful when dealing
+            with returned objects that are updated along the several frames.
+        Refer to the documentation on MDreader.iterate() for information on
+        which MDreader attributes to set to change default parallelization
+        options.
 
         """
         self.p_fn = fn
+        
+        try:
+            ret_type = kwargs.pop("ret_type")
+            if ret_type not in ("normal", "last_per_worker"):
+                raise ValueError("'ret_type' must be one of 'normal', "
+                                 "'last_per_worker'")
+        except KeyError:
+            ret_type = "normal"
+
         try:
             parallel = kwargs.pop("parallel")
         except KeyError:
@@ -973,7 +995,10 @@ class MDreader(MDAnalysis.Universe):
 
         if not self.p_smp:
             if not self.p_mpi:
-                return self._reader()
+                if ret_type == "normal":
+                    return self._reader()
+                else:  # Last frame result only
+                    return self._reader()[-1]
             else:
                 res = self._reader()
                 res = self.comm.gather(res, root=0)
@@ -986,16 +1011,24 @@ class MDreader(MDAnalysis.Universe):
         # 1-level unravelling and de-interlacing
         if self.p_smp or (self.p_mpi and self.p_id == 0):
             if self.p_mode == "block":
-                return [val for subl in res for val in subl] 
+                if ret_type == "normal":
+                    return [val for subl in res for val in subl] 
+                else:   # Last frame result only
+                    return [subl[-1] for subl in res] 
             elif self.p_mode == "interleaved":
-                ret = []
-                for ctr in range(len(res[0])):
-                    for subl in res:
-                        try:
-                            ret.append(subl[ctr])
-                        except IndexError:
-                            pass
-                return ret
+                if ret_type == "normal":
+                    ret = []
+                    for ctr in range(len(res[0])):
+                        for subl in res:
+                            try:
+                                ret.append(subl[ctr])
+                            except IndexError:
+                                pass
+                    return ret
+                else:  # Last frame result only. In order.
+                    ret = [subl[-1] for subl in res if len(subl) < len(res[0])]
+                    ret2 = [subl[-1] for subl in res if len(subl) == len(res[0])]
+                    return ret + ret2
             else:
                 raise NotImplementedError("Unknown parallelization mode '%s'" % self.p_mode)
 
