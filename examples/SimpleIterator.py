@@ -9,5 +9,5 @@ before iteration, which will then have its coordinates updated at each cycle.
 """
 
 md = mdreader.MDreader()
-for fm in md.iterate():
+for fm in md.iterate(p=1):
     pass

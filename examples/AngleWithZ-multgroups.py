@@ -19,7 +19,7 @@ angles = numpy.empty((len(md),len(md.ndxgs)-1,nbonds)) # Angle data will be appe
                                                        # is parsed
                                                        # we have nbonds * number of groups besides the
                                                        # first * number of frames
-for fm in md.iterate():
+for fm in md.iterate(p=1):
     for i,grp in enumerate(md.ndxgs[1:]):  # md.ndxgs[0] is the vertex reference
         vecs = md.ndxgs[0].positions - grp.positions
         norms = numpy.hypot.reduce(vecs, axis=1)

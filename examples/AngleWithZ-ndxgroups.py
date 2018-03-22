@@ -18,7 +18,7 @@ if len(md.ndxgs[0]) != len(md.ndxgs[1]):
 angles = numpy.empty((len(md),nbonds)) # Angle data will be appended as the trajectory is parsed
                                        #  len(md) returns the total number of frames
 
-for fm in md.iterate():
+for fm in md.iterate(p=1):
     # We can now refer to the atom groups according to their index.
     vecs = md.ndxgs[1].positions - md.ndxgs[0].positions
     norms = numpy.hypot.reduce(vecs, axis=1)
