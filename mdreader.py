@@ -18,6 +18,7 @@ message, or instead simply raise the exception and let the user script catch it.
 # TODO: account for cases where frames have no time (a GRO trajectory, for example).
 
 from __future__ import division
+import six
 import sys
 import argparse
 import os
@@ -693,7 +694,7 @@ class MDreader(MDAnalysis.Universe):
         if self.opts.verbose and self.p_id == 0:
             sys.stderr.write("Loading...\n")
         ## Post option handling. outfile and parallel might be unset.
-        if isinstance(self.opts.infile, basestring):
+        if isinstance(self.opts.infile, six.string_types):
             self.opts.infile = [self.opts.infile,]
         if self.check_files:
             map(check_file, [self.opts.topol] + self.opts.infile)
@@ -1316,7 +1317,7 @@ class MDreader(MDAnalysis.Universe):
             if self.ndx_stdin:
                 return self.ndx_stdin.pop(0)
             elif self.interactive:
-                self.ndx_stdin.extend(raw_input().split())
+                self.ndx_stdin.extend(six.moves.input().split())
             else:
                 raise_error(IndexError, "\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
 
