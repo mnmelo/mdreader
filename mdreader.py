@@ -31,6 +31,18 @@ import types
 import multiprocessing
 import textwrap
 
+# Let's try to write thing neatly for both console and notebooks.
+try:
+    from IPython.display import clear_output
+    def printout(val, clearline=False):
+        sys.stderr.write(val)
+        if clearline:
+            clear_output(wait=True)
+except ImportError:
+    def printout(val, clearline=False):
+        if clearline:
+            val = "\033[K" + val + "\r"
+        sys.stderr.write(val)
 
 # Globals ##############################################################
 ########################################################################
@@ -288,11 +300,11 @@ class ThenNow:
 
 class memoryCheck():
     """Checks memory of a given system
-    Lifted from http://doeidoei.wordpress.com/2009/03/22/python-tip-3-checking-available-ram-with-python/
 
+    Lifted from http://doeidoei.wordpress.com/2009/03/22/python-tip-3-checking-available-ram-with-python/
     """
     def __init__(self):
-        if sys.platform == "linux2":
+        if sys.platform.startswith("linux"):
             self.value = self.linuxRam()
         elif sys.platform == "darwin":
             self.value = self.macRam()
@@ -325,7 +337,8 @@ class memoryCheck():
         import subprocess
         process = subprocess.Popen("free -m".split(), stdout=subprocess.PIPE)
         process.poll()
-        totalMemory = process.communicate()[0].split("\n")[1].split()[1]
+        totalMemory = process.communicate()[0].decode("utf-8")
+        totalMemory = totalMemory.split("\n")[1].split()[1]
         return int(totalMemory)
 
     def macRam(self):
@@ -344,8 +357,10 @@ class memoryCheck():
 
 class SeriesCdx():
     """ Placeholder class for a variable behavior of Timeseries.coords"""
-    def __init__(self):
-        pass
+    def __init__(self, parent):
+        self.parent = parent
+    def __getitem__(self, item):
+        return self.parent._cdx[:,self.parent._tjcdx_relndx[item]]
 
 
 class Timeseries():
@@ -357,16 +372,16 @@ class Timeseries():
         return statedict
 
     def __init__(self):
-        self._coords = SeriesCdx()
+        self._coords = SeriesCdx(self)
         self._props = []
         self._tjcdx_ndx = []
         self._tjcdx_relndx = []
         self._cdx = None
         self._xyz = (True, True, True)
         self._coords_istuple = False
-        def _cdx_unpacker(n):
-            return self._cdx[:,self._tjcdx_relndx[n]]
-        self._coords.__getitem__ = _cdx_unpacker
+        #def _cdx_unpacker(n):
+        #    return self._cdx[:,self._tjcdx_relndx[n]]
+        #self._coords.__getitem__ = _cdx_unpacker
 
     @property
     def coords(self):
@@ -692,7 +707,7 @@ class MDreader(MDAnalysis.Universe):
             self.p_id = self.comm.Get_rank()
 
         if self.opts.verbose and self.p_id == 0:
-            sys.stderr.write("Loading...\n")
+            printout("Loading...\n")
         ## Post option handling. outfile and parallel might be unset.
         if isinstance(self.opts.infile, six.string_types):
             self.opts.infile = [self.opts.infile,]
@@ -716,7 +731,7 @@ class MDreader(MDAnalysis.Universe):
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
             if not self.opts.asframenum and not self.p_id:
-                sys.stderr.write("Trajectory has no time information. Will interpret limits as frame numbers.\n")
+                printout("Trajectory has no time information. Will interpret limits as frame numbers.\n")
             self.hastime = False
             self.opts.asframenum = True
 
@@ -790,7 +805,7 @@ class MDreader(MDAnalysis.Universe):
 
     def _initialize_output_stats(self):
         # Should be run before _output_stats, but not absolutely mandatory.
-        sys.stderr.write("Iterating through trajectory...\n")
+        printout("Iterating through trajectory...\n")
 
         if self.progress is None:
             if self.parallel and self.p_mode == "block":
@@ -842,10 +857,10 @@ class MDreader(MDAnalysis.Universe):
                 else:
                     progstr = self.framestr.format(self.snapshot.frame-1, (self.iterframe+1)/self.i_totalframes)
 
-                sys.stderr.write("\033[K%s(%.4f s/frame) \t%s\r" % (progstr, loop_dtime_s, etastr))
+                printout("%s(%.4f s/frame) \t%s" % (progstr, loop_dtime_s, etastr), clearline=True)
                 if self.iterframe == self.i_totalframes-1: 
                     #Last frame. Clean up.
-                    sys.stderr.write("\n")
+                    printout("\n")
                 sys.stderr.flush()
     
     def timeseries(self, coords=None, props=None, x=True, y=True, z=True, parallel=True):
@@ -884,17 +899,17 @@ class MDreader(MDAnalysis.Universe):
         elif coords is not None:
             if isinstance(coords, MDAnalysis.core.groups.AtomGroup):
                 tjcdx_atgrps = [coords]
-            elif type(coords) == types.IntType:
+            elif isinstance(coords,  six.integer_types):
                 tjcdx_atgrps = [self.ndxgs[coords]]
-            elif isinstance(coords, basestring):
+            elif isinstance(coords, six.string_types):
                 tjcdx_atgrps = [self.select_atoms(coords)]
             else:
                 self._tseries._coords_istuple = True
                 try:
                     for atgrp in coords:
-                        if type(atgrp) == types.IntType:
+                        if isinstance(atgrp, six.integer_types):
                             tjcdx_atgrps.append(self.ndxgs[atgrp])
-                        elif type(atgrp) == MDAnalysis.core.AtomGroup.AtomGroup:
+                        elif isinstance(atgrp, MDAnalysis.core.groups.AtomGroup):
                             tjcdx_atgrps.append(atgrp)
                         else:
                             tjcdx_atgrps.append(self.select_atoms("%s" % atgrp))
@@ -911,7 +926,7 @@ class MDreader(MDAnalysis.Universe):
         mem = self.atoms[self._tseries._tjcdx_ndx].positions[0].nbytes*sum(self._tseries._xyz)
 
         if props is not None:
-            if isinstance(props, basestring):
+            if isinstance(props, six.string_types):
                 props = [props]
             self._tseries._props = []
             #validkeys = self.trajectory.ts.__dict__.keys()
@@ -1283,8 +1298,8 @@ class MDreader(MDAnalysis.Universe):
             maxidlen = str(len(str(len(self._ndx_atlists)-1)))
             maxlenlen = str(max(map(len, (map(str, (map(len, self._ndx_atlists)))))))
             for ndxgid, hd in enumerate(self._ndx_atlists):
-                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd._ndx_name, len(hd)))
-            sys.stderr.write("\n")
+                printout(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd._ndx_name, len(hd)))
+            printout("\n")
         else:
             self.interactive = False
             import select
@@ -1297,7 +1312,7 @@ class MDreader(MDAnalysis.Universe):
         for gid, ndxprompt in enumerate(self.ndxparms):
             if gid < self._refng or not self._autondx:
                 if not self.ndx_stdin:
-                    sys.stderr.write("%s:\n" % (ndxprompt))
+                    printout("%s:\n" % (ndxprompt))
                 ndx_str = self._getinputline()
                 try: # First try as an integer
                     self.ndxgs.append(self._ndx_atlists[int(ndx_str)].to_atgroup(self, ndxprompt))
@@ -1308,7 +1323,7 @@ class MDreader(MDAnalysis.Universe):
                         raise_error(KeyError, "Group name %s not found in index." % (ndx_str))
             else:
                 if gid == self._refng:
-                    sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(self._ndx_atlists))
+                    printout("Only %d groups in index file. Reading them all.\n" % len(self._ndx_atlists))
                 self.ndxgs.append(self._ndx_atlists[auto_id].to_atgroup(self, ndxprompt))
                 auto_id += 1
 
