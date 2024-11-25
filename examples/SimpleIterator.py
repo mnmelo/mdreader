@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import mdreader
 """
 This example simply iterates through a trajectory, doing nothing.

@@ -1,30 +1,33 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # MDreader
-# Copyright (c) Manuel Nuno Melo (m.n.melo@rug.nl)
+# Copyright (c) Manuel Nuno Melo (m.n.melo@itqb.unl.pt)
 #
 # Released under the GNU Public Licence, v2 or any higher version
 #
 """
-Class for the all-too-frequent task of asking for options and reading in trajectories. 
+Class for the all-too-frequent task of asking for options, reading in
+trajectories and iterating over them (possibly in parallel).
 
-version v2016.30.06
-by Manuel Melo (m.n.melo@rug.nl) with contribution from Jonathan Barnoud (j.barnoud@rug.nl)
+version v2024.11.24
+by Manuel Melo (m.n.melo@itqb.unl.pt) with contribution from Jonathan Barnoud.
 
-The global variable raise_exceptions (default False) controls whether mdreader should handle
-end-user errors on its own by exiting cleanly and replacing a traceback by a neater error
-message, or instead simply raise the exception and let the user script catch it.
+The global variable raise_exceptions (default False) controls whether mdreader
+should handle end-user errors on its own by exiting cleanly and replacing a
+traceback by a neater error message, or instead simply raise the exception and
+let the user script catch it.
 """
 
 # TODO: account for cases where frames have no time (a GRO trajectory, for example).
 
 from __future__ import division
 import six
+import numbers
 import sys
 import argparse
 import os
 import numpy as np
 import re
-import MDAnalysis
+import MDAnalysis as mda
 import math
 import datetime
 import types
@@ -36,6 +39,7 @@ import textwrap
 ########################################################################
 # Default is to handle own errors, with a neat exit. Change to allow
 #  exceptions to reach the calling code.
+INF = float('inf')
 raise_exceptions = False
 _default_opts = {'s'    : 'topol.tpr',
                  'f'    : 'traj.xtc',
@@ -82,10 +86,16 @@ def _with_defaults(defargs, clobber=True):
             except KeyError:
                 if new_defaults:
                     prev_arg = f_vars[f_vars.index(var)-1]
-                    raise TypeError("While attempting to set defaults for the arguments of function "
-                            "'{fname}' argument '{arg}' comes after optional argument '{prev_arg}' but was assigned "
-                            "no default value. Either set a default value for '{arg}' or modify the base function "
-                            "so that '{arg}' comes before any optional arguments.".format(fname=f.func_name, arg=var, prev_arg=prev_arg))
+                    raise TypeError(
+                            "While attempting to set defaults for the "
+                            "arguments of function '{fname}' argument '{arg}' "
+                            "comes after optional argument '{prev_arg}' but "
+                            "was assigned no default value. Either set a "
+                            "default value for '{arg}' or modify the base "
+                            "function so that '{arg}' comes before any "
+                            "optional arguments.".format(fname=f.func_name,
+                                                         arg=var,
+                                                         prev_arg=prev_arg))
         f.__defaults__ = tuple(new_defaults)
         return f
     return _fnmod
@@ -102,14 +112,14 @@ def _do_be_flags(val, default, asframenum):
         return val
 
 def _parallel_launcher(rdr, w_id):
-    """ Helper function for the parallel execution of registered functions.
+    """ Helper function for parallel-executing registered functions.
 
     """
     rdr.p_id = w_id
     return rdr._reader()
 
 def _parallel_extractor(rdr, w_id):
-    """ Helper function for the parallel extraction of trajectory coordinates/values.
+    """ Helper function for parallel-extracting trajectory coordinates/values.
 
     """
     # block seems to be faster.
@@ -165,9 +175,8 @@ else:
 ########################################################################
 
 class Pool():
-    """ MDAnalysis and multiprocessing's map don't play along because of pickling. This solution seems to work fine.
-
-    """
+    # MDA and multiprocessing's map don't play along because of pickling.
+    #  This solution seems to work fine.
     def __init__(self, processes):
         self.nprocs = processes
 
@@ -182,12 +191,15 @@ class Pool():
         got = 0
         while arglist:
             while arglist and freeprocs:
-                procs.append(multiprocessing.Process(target=self.fcaller, args=((f, arglist.pop(0), num) )))
+                procs.append(multiprocessing.Process(target=self.fcaller,
+                                                     args=((f, arglist.pop(0),
+                                                            num))))
                 num += 1
                 freeprocs -= 1
                 # procs[-1].daemon = True
                 procs[-1].start()
-            i, r = self.outqueue.get() # Execution halts here waiting for output after filling the procs.
+            # Execution halts here waiting for output after filling the procs.
+            i, r = self.outqueue.get()
             result[i] = r
             got += 1
             freeprocs += 1
@@ -276,7 +288,8 @@ class ThenNow:
         self.old = oldval
         self.new = newval
     def fill(self, val):
-        # Fill variant for the initial case where we have to assign both at initialization.
+        # Fill variant for the initial case where we have to assign both
+        #  at initialization.
         self.set(val, val)
     def update(self, val, fill=False):
         if fill:
@@ -292,15 +305,17 @@ class memoryCheck():
 
     """
     def __init__(self):
-        if sys.platform == "linux2":
+        if sys.platform in ("linux", "linux2"):
             self.value = self.linuxRam()
         elif sys.platform == "darwin":
             self.value = self.macRam()
         elif sys.platform == "win32":
             self.value = self.windowsRam()
         else:
-            self.value = float('inf')
-            raise EnvironmentError("Memory detection only works with Mac, Win, or Linux. Memory val set to 'inf'.")
+            self.value = INF 
+            raise EnvironmentError("Memory detection only works with Mac, Win, "
+                                   "or Linux. OS reported as %s. "
+                                   "Memory val set to 'inf'." % sys.platform)
  
     def windowsRam(self):
         """Uses Windows API to check RAM in this OS"""
@@ -324,9 +339,9 @@ class memoryCheck():
         """Returns the RAM of a linux system"""
         import subprocess
         process = subprocess.Popen("free -m".split(), stdout=subprocess.PIPE)
-        process.poll()
-        totalMemory = process.communicate()[0].split("\n")[1].split()[1]
-        return int(totalMemory)
+        totalMemory = int(process.communicate()[0].decode()
+                          .split("\n")[1].split()[1])
+        return totalMemory
 
     def macRam(self):
         """Returns the RAM of a mac system"""
@@ -335,10 +350,13 @@ class memoryCheck():
         process.poll()
         outpt = process.communicate()[0]
         try:
-            totalPages = int(re.search("Pages free:\s*(\d+).", outpt).groups()[0])
-            bytperPage = int(re.search("page size of (\d+) bytes", outpt).groups()[0])
+            totalPages = int(re.search("Pages free:\s*(\d+).", outpt)
+                             .groups()[0])
+            bytperPage = int(re.search("page size of (\d+) bytes", outpt)
+                             .groups()[0])
         except:
-            raise EnvironmentError("Can't detect how much free memory is available from 'vm_stat'.")
+            raise EnvironmentError("Can't detect how much free memory "
+                                   "is available from 'vm_stat'.")
         return int(totalPages*bytperPage/(1024**2))
 
 
@@ -384,7 +402,9 @@ class DummyParser():
         dest = kwargs.get('dest')
         if dest is not None:
             nargs = kwargs.get('nargs')
-            if nargs is not None:
+            if nargs == '?':
+                val = kwargs.get('const', kwargs.get('default'))
+            elif nargs is not None:
                 val = [kwargs.get('default')]
             else:
                 val = kwargs.get('default')
@@ -402,7 +422,8 @@ class _NamedAtlist(np.ndarray):
         if isinstance(indices, np.ndarray):
             ret = indices.view(cls)
         arr = np.array(indices)
-        ret = np.ndarray.__new__(cls, shape=arr.shape, dtype=arr.dtype, buffer=arr)
+        ret = np.ndarray.__new__(cls, shape=arr.shape,
+                                 dtype=arr.dtype, buffer=arr)
         ret._xtra_attr = attr
         setattr(ret, attr, name)
         return ret
@@ -419,12 +440,22 @@ class _NamedAtlist(np.ndarray):
 
 # Effectivelly, MDreader will also inherit from either argparse.ArgumentParser
 # or from DummyParser.
-class MDreader(MDAnalysis.Universe):
-    """An object class inheriting from both argparse.ArgumentParser and MDAnalysis.Universe. Should be initialized as for argparse.ArgumentParser, with additional named arguments:
-    Argument 'arguments' should be passed the list of command line arguments; it defaults to sys.argv[1:], which is very likely what you'll want.
-    Argument 'outstats' defines how often (framewise) to output frame statistics. Defaults to 1.
-    Argument 'statavg' defines over how many frames to average statistics. Defaults to 100.
-    Argument 'internal_argparse' lets the user choose whether they want to let MDreader take care of option handling. Defaults to True. If set to False, a set of default filenames and most other options (starttime, endtime, etc.) will be used. Check functions setargs and add_ndx on how to change these defaults, or directly modify the mdreader.opts object attributes.
+class MDreader(mda.Universe):
+    """Class inheriting from argparse.ArgumentParser and MDAnalysis.Universe.
+
+    Should be initialized as for argparse.ArgumentParser,
+    with additional named arguments:
+    - 'arguments' should be passed the list of command line arguments;
+      defaults to sys.argv[1:], which is very likely what you'll want.
+    - 'outstats' defines how often (framewise) to output frame statistics;
+      defaults to 1.
+    - 'statavg' defines over how many frames to average statistics;
+      defaults to 100.
+    - 'internal_argparse' lets the user choose whether they want to let
+      MDreader take care of option handling; defaults to True. If set to False,
+      a set of default filenames and most other options (starttime, endtime,
+      etc.) will be used. Check functions setargs and add_ndx on how to change
+      these defaults, or directly modify the mdreader.opts object attributes.
 
     The command-line argument list will default to:
     
@@ -462,12 +493,25 @@ class MDreader(MDAnalysis.Universe):
                                     altogether index information will be built from
                                     residue names. (default: None)
 
-    where %prog% is the 'prog' argument as supplied during initialization, or sys.argv[0] if none is provided.
+    where %prog% is the 'prog' argument as supplied during initialization,
+    or sys.argv[0] if none is provided.
     
-    After MDreader instantiation the values of the defaults to the arguments can be changed using MDreader.setargs() (also for setting/unsetting automatic file IO checking; see function documentation). If a 'ver' argument is passed to setargs it will be displayed as the program version, and a '-V'/'--version' option for that purpose will be automatically created.
-    The arguments for an MDreader instance can also be added or overridden using the add_argument() method (see the argparse documentation).
-    The iterate() method will iterate over the trajectory according to the supplied options, yielding frames as it goes. You'll probably want to use it as part of a for-loop header.
-    argparse deprecates using the 'version' argument to __init__. If you need to set it, use the setargs method.
+    After MDreader instantiation the values of the defaults to the arguments
+    can be changed using MDreader.setargs() (also for setting/unsetting
+    automatic file IO checking; see function documentation). If a 'ver'
+    argument is passed to setargs it will be displayed as the program version,
+    and a '-V'/'--version' option for that purpose will be automatically
+    created.
+
+    The arguments for an MDreader instance can also be added or overridden
+    using the add_argument() method (see the argparse documentation).
+
+    The iterate() method will iterate over the trajectory according to the
+    supplied options, yielding frames as it goes. You'll probably want to use
+    it as part of a for-loop header.
+
+    argparse deprecates using the 'version' argument to __init__. If you need
+    to set it, use the setargs method.
     
     """
 
@@ -485,16 +529,22 @@ class MDreader(MDAnalysis.Universe):
             newcls = type(cls.__name__, bases + (DummyParser,), {})
         return super(MDreader, newcls).__new__(newcls)
 
-    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100, *args, **kwargs):
-        """ Sets up the MDreader object, but doesn't initialize most heavy stuff.
+    def __init__(self, arguments=sys.argv[1:], outstats=1, statavg=100,
+                 *args, **kwargs):
+        """ Sets up the MDreader object; doesn't initialize most heavy stuff.
 
-        Option parsing and topology/trajectory loading is left to be done on a need basis.
-        keyword 'arguments' allows one to specify a custom list of CLI-like arguments.
+        Option parsing and topology/trajectory loading is left to be done on a
+         need basis.
+        keyword 'arguments' allows one to specify a custom list of
+         CLI-like arguments.
         keyword 'outstats' controls how often to report performance statistics.
-        keyword 'statavg' controls over how many frames to accumulate performance statistics.
-        Finally, keyword 'internal_argparse' allows one to specify whether to use argparse for
-        option parsing (set to True) or to use a DummyParser instead (set to False). In the
-        latter case one must later supply all needed options by hand, via the setargs method.
+        keyword 'statavg' controls over how many frames to accumulate
+         performance statistics.
+        Finally, keyword 'internal_argparse' allows one to specify whether to
+         use argparse for
+        option parsing (set to True) or to use a DummyParser instead (set to
+         False). In the latter case one must later supply all needed options by
+         hand, via the setargs method.
         """
         self.arguments = arguments
         # Some users don't like to have argparse thrown in
@@ -506,7 +556,9 @@ class MDreader(MDAnalysis.Universe):
             if len(args) < 6:
                 kwargs.setdefault("formatter_class", ProperFormatter) 
             argparse.ArgumentParser.__init__(self, *args, **kwargs)
-            self.check_files = True # Whether to check for readability and writability of input and output files.
+            # Whether to check for readability and writability of input and
+            #  output files.
+            self.check_files = True
         else:
             DummyParser.__init__(self, *args, **kwargs)
             self.check_files = False
@@ -517,7 +569,7 @@ class MDreader(MDAnalysis.Universe):
         self._nframes = None
         # Stuff pertaining to progress output/parallelization
         self.parallel = False  # Whether to parallelize
-        self.p_smp = False  # SMP parallelization (within the same machine, or virtual machine)
+        self.p_smp = False  # SMP parallelization (within the same machine)
         self.p_mpi = False  # MPI parallelization
         self.outstats = outstats
         self.statavg = statavg
@@ -533,9 +585,11 @@ class MDreader(MDAnalysis.Universe):
         self.p_mpi_keep_workers_alive = False
         self.p_parms_set = False
         self.i_parms_set = False
-        self._cdx_meta = False # Whether to also return time/box arrays when extracting coordinates.
+        # Whether to also return time/box arrays when extracting coordinates.
+        self._cdx_meta = False
 
-        # Check whether we're running under MPI. Not failsafe, but the user should know better than to fudge with these env vars.
+        # Check whether we're running under MPI. Not foolproof, but the user
+        #  should know better than to fudge with these env vars.
         mpivarlst = ['PMI_RANK', 'OMPI_COMM_WORLD_RANK', 'OMPI_MCA_ns_nds_vpid',
                      'PMI_ID', 'SLURM_PROCID', 'LAMRANK', 'MPI_RANKID',
                      'MP_CHILD', 'MP_RANK', 'MPIRUN_RANK']
@@ -549,7 +603,9 @@ class MDreader(MDAnalysis.Universe):
         return self.totalframes
 
     def __getattr__(self, name):
-    # This is a fancy way of only doing important stuff when needed. Also, the user no longer needs to call do_parse, even to access MDAnalysis sub objects.
+    # This is a fancy way of only doing important stuff when needed. Also, the
+    #  user no longer needs to call do_parse, even to access MDAnalysis
+    #  sub objects.
         if name in ['startframe','endframe','totalframes']:
             try:
                 return getattr(self, "_"+name)
@@ -562,22 +618,26 @@ class MDreader(MDAnalysis.Universe):
             self.do_parse()
             return getattr(self, name)
         else:
-            raise AttributeError("%r object has no attribute %r" % (self.__class__, name))
+            raise AttributeError("%r object has no attribute %r"
+                                  % (self.__class__, name))
 
     @property
     def nframes(self):
         if self._nframes is None:
             self.ensure_parsed()
-            # Trajectory indexing can be slow. No need to do for every MPI worker: we just pass the offsets around.
+            # Trajectory indexing can be slow. No need to do for every MPI
+            #  worker: we just pass the offsets around.
             if not self.p_id or not self.mpi:
                 self._nframes = len(self.trajectory)
                 if self._nframes is None or self._nframes < 1:
                     raise_error(IOError, 'No frames to be read.')
             if self.mpi:
                 if hasattr(self.trajectory, "_TrjReader__offsets"):
-                    self.trajectory._TrjReader__offsets = self.comm.bcast(self.trajectory._TrjReader__offsets, root=0)
+                    self.trajectory._TrjReader__offsets = self.comm.bcast(
+                                   self.trajectory._TrjReader__offsets, root=0)
                     if self.p_id != 0:
-                        self.trajectory._TrjReader__numframes = len(self.trajectory._TrjReader__offsets)
+                        self.trajectory._TrjReader__numframes = len(
+                                           self.trajectory._TrjReader__offsets)
                         self._nframes = len(self.trajectory._TrjReader__offsets)
                 elif self.p_id:
                     self._nframes = len(self.trajectory)
@@ -585,87 +645,146 @@ class MDreader(MDAnalysis.Universe):
 
     @_with_defaults(_default_opts)
     def setargs(self, s, f, o, b, e, skip, np, v, version=None, check_files=None):
-        """ This function allows the modification of the default parameters of the default arguments without having
-            to go through the hassle of overriding the args in question. The arguments to this function will override the defaults
-            of the corresponding options. These defaults are taken even when internal_argparse has been set to False.
-            In the particular case of the 'o' and 'np' arguments one can pass 'None' to hide the option. Check the
-            set_parallel_parms method on how to set a specific parallelization number.
-            check_files (also accessible via MDreader_obj.check_files) controls whether checks are performed on the readability and
-            writabilty of the input/output files defined here (default behavior is to check).
+        """ Shortcut function for setting default parameters
+
+            Allows the modification of the default parameters of the default
+             arguments without having to go through the hassle of overriding
+             the args in question.
+
+            The arguments to this function will override
+             the defaults of the corresponding options. These defaults are taken
+             even when internal_argparse has been set to False.
+            
+            In the particular case of the 'o' and 'np' arguments one can pass
+             'None' to hide the option.
+
+            Check the set_parallel_parms method on how to set a specific
+             parallelization number.
+
+            check_files (also accessible via MDreader.check_files) controls
+             whether checks are performed on the readability and writabilty of
+             the input/output files defined here (default behavior is to check).
         """
         # Slightly hackish way to avoid code duplication
         parser = self #if self.internal_argparse else self._dummyopts
-        # Note: MUST always use dest as a kwarg, to satisfy the DummyParser. Anything without 'dest' will be ignored by it (only relevant when the user sets internal_argparse to False)
-        parser.add_argument('-f', metavar='TRAJ', dest="infile", default=f, nargs="*",
-                help = 'file\tThe trajectory to analyze. If multiple files they\'ll be analyzed concatenated.')
+        # Note: MUST always use dest as a kwarg, to satisfy the DummyParser.
+        #  Anything without 'dest' will be ignored by it (only relevant when
+        #  the user sets internal_argparse to False)
+        parser.add_argument('-f', metavar='TRAJ', dest="infile", default=f,
+                nargs="*",
+                help = 'file\tThe trajectory to analyze. If multiple files '
+                       'they\'ll be analyzed concatenated.')
         parser.add_argument('-s', metavar='TOPOL', dest="topol", default=s,
-                help = 'file\t.tpr, .gro, or .pdb file with the same atom numbering as the trajectory.')
+                help = 'file\t.tpr, .gro, or .pdb file with the same atom '
+                       'numbering as the trajectory.')
         if o is None:
-            parser.add_argument('-o', metavar='OUT', dest='outfile', default='data.xvg',
-                    help = argparse.SUPPRESS)
+            parser.add_argument('-o', metavar='OUT', dest='outfile',
+                    default='data.xvg', help = argparse.SUPPRESS)
         else:
             parser.add_argument('-o', metavar='OUT', dest='outfile', default=o,
                     help = 'file\tThe main data output file.')
-        parser.add_argument('-b', metavar='TIME/FRAME', dest='starttime', default=b,
-                help = 'real\tTime to begin analysis from. If -fmn is set, -b takes '
-                    'instead an int, as the starting frame number.')
-        parser.add_argument('-e', metavar='TIME/FRAME', dest='endtime', default=e,
-                help = 'real\tTime to end analysis at. If -fmn is set, -e takes '
-                    'instead an int, as the end frame number.')
+        parser.add_argument('-b', metavar='TIME/FRAME', dest='starttime',
+                default=b,
+                help = 'real\tTime to begin analysis from. If -fmn is set, '
+                    '-b takes instead an int, as the starting frame number.')
+        parser.add_argument('-e', metavar='TIME/FRAME', dest='endtime',
+                default=e,
+                help = 'real\tTime to end analysis at. If -fmn is set, -e '
+                    'takes instead an int, as the end frame number.')
         parser.add_argument('-fmn',  action='store_true', dest='asframenum',
-                help = 'bool\tWhether to interpret -b and -e as frame numbers (0-based).')
-        parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip', default=skip,
+                help = 'bool\tWhether to interpret -b and -e as frame numbers '
+                       '(0-based).')
+        parser.add_argument('-skip', metavar='FRAMES', type=int, dest='skip',
+                default=skip,
                 help = 'int \tInterval between frames when analyzing.')
         if np is None:
-            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=_default_opts['np'],
+            parser.add_argument('-np', metavar='NPROCS', type=int,
+                    dest='parallel', default=_default_opts['np'],
                     help = argparse.SUPPRESS)
         else:
-            parser.add_argument('-np', metavar='NPROCS', type=int, dest='parallel', default=np,
-                    help = 'int \tNumber of processes to parallelize over when iterating. 1 means serial '
-                    'iteration, and 0 uses the OS-reported number of cores. Ignored when using MPI, or when '
-                    'the script specifically sets the number of parallelization workers.')
-        parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2], dest='verbose', default=v,
+            parser.add_argument('-np', metavar='NPROCS', type=int,
+                    dest='parallel', default=np,
+                    help = 'int \tNumber of processes to parallelize over when '
+                    'iterating. 1 means serial iteration, and 0 uses the '
+                    'OS-reported number of cores. Ignored when using MPI, or '
+                    'when the script specifically sets the number of '
+                    'parallelization workers.')
+        parser.add_argument('-v', metavar='LEVEL', type=int, choices=[0,1,2],
+                dest='verbose', default=v,
                 help = 'enum\tVerbosity level. 0:quiet, 1:progress 2:debug')
         if version is not None:
-            parser.add_argument('-V', '--version', action='version', version='%%(prog)s %s'%version,
-                help = 'Prints the script version and exits.')
+            parser.add_argument('-V', '--version', action='version',
+                    version='%%(prog)s %s'%version,
+                    help = 'Prints the script version and exits.')
         if check_files is not None:
             self.check_files = check_files
 
-    def add_ndx(self, ng=1, ndxparms=[], ndxdefault='index.ndx', ngdefault=1, smartindex=True):
-        """Adds an index read to the MDreader. A -n option will be added.
-        ng controls how many groups to ask for.
-        If ng is set to 'n' a -ng option will be added, which will then control how many groups to ask for.
-        ndxparms should be a list of strings to be printed for each group selection. The default is "Select a group" (a colon is inserted automatically).
-        To allow for one or more reference groups plus n analysis groups, ndxparms will be interpreted differently according to ng and the -ng option:
-            If ng is "n" it will be set to the number of groups specified by option -ng plus the number of ndxparms elements before the last.
-            If ng is greater than the number of elements in ndxparms, then the last element will be repeated to fulfill ng. If ndxparms is greater, all its elements will be used and ng ignored.
-        ngdefault sets the default for the -ng option (itself defaulting to 1).
-        ndxdefault sets the default for the -n option. Contrary to other mdreader flags, -n can be passed without arguments, in which case it will default to ndxdefault (which is 'index.ndx' by default). If -n is not passed at all it'll take a value of None, and mdreader will then default to getting group info from the system residue names.
-        Note: if internal_argparse has been set to False, then ndxdefault directly sets which file to take as the index.
-        smartindex controls smart behavior, by which an index with a number of groups equal to n is taken as is without prompting. You'll want to disble it when it makes sense to pick the same index group multiple times, or when order is important.
+    def add_ndx(self, ng=1, ndxparms=[], ndxdefault='index.ndx',
+                ngdefault=1, smartindex=True):
+        """Adds an index read to the MDreader.
+
+        A -n option will be added.
+        - 'ng' controls how many groups to ask for. If it is set to 'n' a "-ng"
+          flag will be added to the program, which will then control how many
+          groups to ask for.
+        - 'ndxparms' should be a list of strings to be printed for each group
+          selection. The default is "Select a group" (a colon is inserted
+          automatically).
+          To allow for one or more reference groups plus n analysis groups,
+          ndxparms will be interpreted differently according to ng and the
+          -ng flag:
+            If ng is "n" it will be set to the number of groups specified by
+            flag -ng plus the number of ndxparms elements before the last.
+            If ng is greater than the number of elements in ndxparms, then the
+            last element will be repeated to fulfill ng. If ndxparms is greater,
+            all its elements will be used and ng ignored.
+        - ngdefault sets the default for the -ng option (itself defaulting to 1).
+        - ndxdefault sets the default for the -n option. Contrary to other
+          mdreader flags, -n can be passed without arguments, in which case it
+          will default to ndxdefault (which is 'index.ndx' by default). If -n
+          is not passed at all it'll take a value of None, and mdreader will
+          then default to getting group info from the system residue names.
+          Note: if internal_argparse has been set to False, then ndxdefault
+          directly sets which file to take as the index.
+        - smartindex controls smart behavior, by which an index with a number
+          of groups equal to n is taken as is without prompting. You'll want to
+          disable it when it makes sense to pick the same index group multiple
+          times, or when order is important.
 
         Example:
-        #Simple index search for a single group. Default message:
+        # Simple index search for a single group. Default message:
         MDreader_obj.add_ndx()
-        #Ask for more groups:
+        # Ask for more groups:
         MDreader_obj.add_ndx(ng=3)
-        #Ask for a reference group plus a number of analysis groups to be decided with -ng
-        MDreader_obj.add_ndx(ng="n", ndxparms=["Select a reference group", "Select a group for doing stuff"])
+        # Ask for a reference group plus a number of analysis groups to be
+        # decided with -ng
+        MDreader_obj.add_ndx(ng="n",
+                             ndxparms=["Select a reference group",
+                                       "Select a group for doing stuff"])
 
         """
         if self.hasindex:
             raise AttributeError("Index can only be set once.")
         self.hasindex = True
-        parser = self if self.internal_argparse else self.opts
-        parser.add_argument('-n', metavar='INDEX', nargs='?', dest='ndx', default=None, const=ndxdefault,
-              help = 'file\tIndex file. Defaults to \'%s\' if the filename is not specified. If this flag is omitted altogether index information will be built from residue names.' % ndxdefault)
+        parser = self # if self.internal_argparse else self.opts
+        parser.add_argument('-n', metavar='INDEX', nargs='?', dest='ndx',
+                default=None, const=ndxdefault,
+                help = 'file\tIndex file. Defaults to \'%s\' if the filename '
+                       'is not specified. If this flag is omitted altogether '
+                       'index information will be built from residue names.'
+                       % ndxdefault)
 
         self.ng = ng
         if ng == "n":
             if not self.internal_argparse:
-                raise ValueError("When setting internal_argparse to False you cannot pass 'n' for the 'ng' parameter of add_ndx (as there is no way for the MDreader object to then ask for the number of index groups). Instead, find out how large 'n' is and pass that number to add_ndx.")
-            self.add_argument('-ng', metavar='NGROUPS', type=int, dest='ng', default=ngdefault,
+                raise ValueError("When setting internal_argparse to False you "
+                                 "cannot pass 'n' for the 'ng' parameter of "
+                                 "add_ndx (as there is no way for the MDreader "
+                                 "object to then ask for the number of index "
+                                 "groups). Instead, find out how large 'n' is "
+                                 "and pass that number to add_ndx.")
+            self.add_argument('-ng', metavar='NGROUPS', type=int, dest='ng',
+                    default=ngdefault,
                     help = 'file\tNumber of groups for analysis.')
         self.ndxparms = ndxparms
         self.smartindex = smartindex
@@ -675,16 +794,22 @@ class MDreader(MDAnalysis.Universe):
             self.do_parse()
 
     def do_parse(self):
-        """ Parses the command-line arguments according to argparse and does some basic sanity checking on them. It also prepares some argument-dependent loop variables.
-        If it hasn't been called so far, do_parse() will be called by the iterate() method, or when trying to access attributes that require it.
-        Usually, you'll only want to call this function manually if you want to make sure at which point the arguments are read/parsed.
+        """ Parses command-line arguments and does some basic sanity checking.
+
+        Also prepares some argument-dependent loop variables.
+        If it hasn't been called so far, do_parse() will be called by the
+        iterate() method, or when trying to access attributes that require it.
+        Usually, you'll only want to call this function manually if you want to
+        make sure at which point the arguments are read/parsed.
 
         """
         self.opts = self.parse_args(self.arguments)
         if self.internal_argparse:
-            # We find the version string in the parser _actions. Somewhat fragile.
+            # We find the version string in the parser _actions.
+            # Somewhat fragile.
             for action in self._actions:
-                if isinstance(action, argparse._VersionAction) and self.version is None:
+                if self.version is None and isinstance(action,
+                                                       argparse._VersionAction):
                     self.version = action.version
         if self.mpi:
             from mpi4py import MPI
@@ -703,20 +828,25 @@ class MDreader(MDAnalysis.Universe):
         check_positive(self.opts.parallel)
 
         # -b/-e flag handling:
-        self.opts.starttime = _do_be_flags(self.opts.starttime, _default_opts['b'], self.opts.asframenum)
-        self.opts.endtime = _do_be_flags(self.opts.endtime, _default_opts['e'], self.opts.asframenum)
+        self.opts.starttime = _do_be_flags(self.opts.starttime,
+                                           _default_opts['b'],
+                                           self.opts.asframenum)
+        self.opts.endtime = _do_be_flags(self.opts.endtime,
+                                         _default_opts['e'],
+                                         self.opts.asframenum)
 
         #if self.opts.endtime is not None and self.opts.endtime < self.opts.starttime:
         #    raise_error(ValueError, 'Specified end time/frame lower than start time/frame.')
 
         if not self.p_parms_set:
             self.set_parallel_parms(self.opts.parallel)
-        MDAnalysis.Universe.__init__(self, self.opts.topol, *self.opts.infile)
+        mda.Universe.__init__(self, self.opts.topol, *self.opts.infile)
 
         self.hastime = True
         if not hasattr(self.trajectory.ts, 'time') or self.trajectory.dt == 0.:
             if not self.opts.asframenum and not self.p_id:
-                sys.stderr.write("Trajectory has no time information. Will interpret limits as frame numbers.\n")
+                sys.stderr.write("Trajectory has no time information. Will "
+                                 "interpret limits as frame numbers.\n")
             self.hastime = False
             self.opts.asframenum = True
 
@@ -743,18 +873,39 @@ class MDreader(MDAnalysis.Universe):
         self._select_ndx_atgroups()
 
     def iterate(self, p=None):
-        """Yields snapshots from the trajectory according to the specified start and end boundaries and skip.
-        Calculations on AtomSelections will automagically reflect the new snapshot, without needing to refer to it specifically.
-        Argument p sets the number of workers, overriding any already set. Note that MDreader is set to use all cores by default, so if you want serial iteration you must pass p=1.
-        Other output and parallelization behavior will depend on a number of MDreader properties that are automatically set, but can be changed before invocation of iterate():
-          MDreader.progress (default: None) can be one of 'frame', 'pct', 'both', 'empty', or None. It sets the output to frame numbers, %% progress, both, or nothing. If set to None behavior defaults to 'frame', or 'pct' when iterating in parallel block mode.
-          MDreader.p_mode (default: 'block') sets either 'interleaved' or 'block' parallel iteration.
-          When MDreader.p_mode=='block' MDreader.p_overlap (default: 0) sets how many frames blocks overlap, to allow multi frame analyses (say, an average) to pick up earlier on each block.
-          MDreader.p_num (default: None) controls in how many blocks/segments to divide the iteration (the number of workers; will use all the processing cores if set to None) and MDreader.p_id is the id of the current worker for reading and output purposes (to avoid terminal clobbering only p_id 0 will output). 
+        """Yields snapshots from the trajectory per 'start', 'end' and skip.
+
+        Calculations on AtomSelections will automagically reflect the new
+        snapshot, without needing to refer to it specifically.
+        - 'p' sets the number of workers, overriding any already set. Note that
+          MDreader is set to use all cores by default, so if you want serial
+          iteration you must pass p=1.
+        Other output and parallelization behavior will depend on a number of
+        MDreader properties that are automatically set, but can be changed
+        before invocation of iterate():
+          - MDreader.progress (default: None) can be one of 'frame', 'pct',
+            'both', 'empty', or None. It sets the output to frame numbers,
+            %% progress, both, or nothing. If set to None behavior defaults to
+            'frame', or 'pct' when iterating in parallel block mode.
+          - MDreader.p_mode (default: 'block') sets either 'interleaved' or
+            'block' parallel iteration.
+          - When MDreader.p_mode=='block' MDreader.p_overlap (default: 0) sets
+            how many frames blocks overlap, to allow multi frame analyses (say,
+            an average) to pick up earlier on each block.
+          - MDreader.p_num (default: None) controls in how many blocks/segments
+            to divide the iteration (the number of workers; will use all the
+            processing cores if set to None).
+          - MDreader.p_id is the id of the current worker for reading and
+            output purposes (to avoid terminal clobbering only p_id 0 will
+            output). 
             **
-            If messing with worker numbers (why would you do that?) beware to always set a different p_id per worker when iterating in parallel, otherwise you'll end up with repeated trajectory chunks.
+            If messing with worker numbers (why would you do that?) beware to
+            always set a different p_id per worker when iterating in parallel,
+            otherwise you'll end up with repeated trajectory chunks.
             **
-          MDreader.p_scale_dt (default: True) controls whether the reported time per frame will be scaled by the number of workers, in order to provide an effective, albeit estimated, per-frame time.
+          - MDreader.p_scale_dt (default: True) controls whether the reported
+            time per frame will be scaled by the number of workers, in order to
+            provide an effective, albeit estimated, per-frame time.
 
         """
         self.ensure_parsed()
@@ -764,7 +915,8 @@ class MDreader(MDAnalysis.Universe):
         if not self.p_parms_set:
             self.set_parallel_parms()
         verb = self.opts.verbose and (not self.parallel or self.p_id==0)
-        # We're only outputting after each worker has picked up on the pre-averaging frames
+        # We're only outputting after each worker has picked up on the
+        # pre-averaging frames
         self.i_overlap = True
         self.iterframe = 0
 
@@ -778,7 +930,9 @@ class MDreader(MDAnalysis.Universe):
         sys.stderr.flush()
 
         # The LOOP!
-        for self.snapshot in self.trajectory[self.i_startframe:self.i_endframe+1:self.i_skip]:
+        for self.snapshot in self.trajectory[self.i_startframe:
+                                             self.i_endframe+1:
+                                             self.i_skip]:
             if self.i_overlap and self.iterframe >= self.p_overlap:
                 self.i_overlap = False # Done overlapping. Let the output begin!
             if verb:
@@ -797,7 +951,8 @@ class MDreader(MDAnalysis.Universe):
                 self.progress = 'pct'
             else:
                 self.progress = 'frame'
-        # Python-style implementation of a switch/case. It also avoids always comparing the flag every frame.
+        # Python-style implementation of a switch/case. It also avoids always
+        # comparing the flag every frame.
         if self.progress == "frame":
             self.framestr = "Frame {0:d}"
             if self.hastime:
@@ -811,7 +966,8 @@ class MDreader(MDAnalysis.Universe):
         elif self.progress == "empty":
             self.framestr = ""
         else:
-            raise ValueError("Unrecognized progress mode \"%r\"" % (self.progress))
+            raise ValueError("Unrecognized progress mode \"%r\""
+                             % (self.progress))
 
 
     def _output_stats(self):
@@ -820,16 +976,21 @@ class MDreader(MDAnalysis.Universe):
         self.loop_time.update(datetime.datetime.now())
         if self.iterframe: # No point in calculating delta times on iterframe 0
             self.loop_dtime = self.loop_time.new - self.loop_time.old
-            self.loop_dtimes[(self.iterframe-1) % self.statavg] = self.loop_dtime
+            self.loop_dtimes[(self.iterframe-1)
+                             % self.statavg] = self.loop_dtime
             # Output stats every outstats step or at the last frame.
-            if (not self.iterframe % self.outstats) or self.iterframe == self.i_totalframes-1:
+            if ((not self.iterframe % self.outstats)
+                or self.iterframe == self.i_totalframes-1):
                 avgframes = min(self.iterframe,self.statavg)
                 self.loop_sumtime = self.loop_dtimes[:avgframes].sum()
-                # No float*dt multiplication before python 3. Let's scale the comparing seconds and set the dt ourselves.
-                etaseconds = dtime_seconds(self.loop_sumtime)*(self.i_totalframes-self.iterframe)/avgframes
+                # No float*dt multiplication before python 3. Let's scale the
+                # comparing seconds and set the dt ourselves.
+                etaseconds = (dtime_seconds(self.loop_sumtime) *
+                              (self.i_totalframes-self.iterframe)/avgframes)
                 eta = datetime.timedelta(seconds=etaseconds)
                 if etaseconds > 300:
-                    etastr = (datetime.datetime.now()+eta).strftime("Will end %Y-%m-%d at %H:%M:%S.")
+                    etastr = (datetime.datetime.now() +
+                              eta).strftime("Will end %Y-%m-%d at %H:%M:%S.")
                 else:
                     etastr = "Will end in %ds." % round(etaseconds)
                 loop_dtime_s = dtime_seconds(self.loop_dtime)
@@ -838,24 +999,41 @@ class MDreader(MDAnalysis.Universe):
                         loop_dtime_s /= self.p_num
 
                 if self.hastime:
-                    progstr = self.framestr.format(self.snapshot.frame-1, (self.iterframe+1)/self.i_totalframes, self.snapshot.time)
+                    progstr = self.framestr.format(self.snapshot.frame - 1,
+                                                   (self.iterframe + 1) /
+                                                   self.i_totalframes,
+                                                   self.snapshot.time)
                 else:
-                    progstr = self.framestr.format(self.snapshot.frame-1, (self.iterframe+1)/self.i_totalframes)
+                    progstr = self.framestr.format(self.snapshot.frame - 1,
+                                                   (self.iterframe + 1) /
+                                                   self.i_totalframes)
 
-                sys.stderr.write("\033[K%s(%.4f s/frame) \t%s\r" % (progstr, loop_dtime_s, etastr))
-                if self.iterframe == self.i_totalframes-1: 
+                sys.stderr.write("\033[K%s(%.4f s/frame) \t%s\r"
+                                 % (progstr, loop_dtime_s, etastr))
+                if self.iterframe == self.i_totalframes - 1: 
                     #Last frame. Clean up.
                     sys.stderr.write("\n")
                 sys.stderr.flush()
     
-    def timeseries(self, coords=None, props=None, x=True, y=True, z=True, parallel=True):
-        """Extracts coordinates and/or other time-dependent attributes from a trajectory.
-        'coords' can be an AtomGroup, an int, a selection text, or a tuple of these. In case of an int, it will be taken as the mdreader index group number to use.
-        'props' must be a str or a tuple of str, which will be used as attributes to extract from the trajectory's timesteps. These must be valid attributes of the mdreader.trajectory.ts class, and cannot be bound functions or reserved '__...__' attributes.
-        Will return a mdreader.Timeseries object, holding an array, or a tuple, for each coords, and having named properties holding the same-named time-arrays. If both coords and props are are None the default is to return the time-coordinates array for the entire set of atoms.
-        'props' attributes should be set in quotes, ommitting the object's name.
-        'parallel' (default=True) controls parallelization behavior.
-        'x', 'y', and 'z' (default=True) set whether the three coordinates, or only a subset, are extracted.
+    def timeseries(self, coords=None, props=None,
+                   x=True, y=True, z=True, parallel=True):
+        """Extracts coordinates and/or other time-dependent data from a trajectory.
+
+        - 'coords' can be an AtomGroup, an int, a selection text, or a tuple of
+          these. In case of an int, it will be taken as the mdreader index
+          group number to use.
+        - 'props' must be a str or a tuple of str, which will be used as
+          attributes to extract from the trajectory's timesteps. These must be
+          valid attributes of the mdreader.trajectory.ts class, and cannot be
+          bound functions or reserved '__...__' attributes.
+        - 'parallel' (default=True) controls parallelization behavior.
+        - 'x', 'y', and 'z' (default=True) set whether the three coordinates,
+          or only a subset, are extracted.
+
+        Will return a mdreader.Timeseries object, holding an array, or a tuple,
+        for each coords, and having named properties holding the same-named
+        time-arrays. If both coords and props are are None the default is to
+        return the time-coordinates array for the entire set of atoms.
 
         Examples:
         1. Timeseries with whole time-coordinate array for all atoms:
@@ -864,13 +1042,16 @@ class MDreader(MDAnalysis.Universe):
         2. Equivalent to above:
         mdreader.timeseries(mdreader.atoms)
 
-        3. Timeseries with a tuple of two selections time-coordinates (the NC3 atoms, and the fifth chosen group from the index):
+        3. Timeseries with a tuple of two selections time-coordinates
+           (the NC3 atoms, and the fifth chosen group from the index):
         mdreader.timeseries(("name NC3", 4))
 
         4. Timeseries with an array of box time-coordinates:
         mdreader.timeseries(props='dimensions')
 
-        5. Timeseries with a time-coordinate array correspondig to the x,y components of the second index group, and time-arrays of the system's box dimensions and time.
+        5. Timeseries with a time-coordinate array correspondig to the x,y
+           components of the second index group, and time-arrays of the
+           system's box dimensions and time.
         mdreader.timeseries(coords=1, props=('dimensions', 'time'), z=False)
 
         """
@@ -879,56 +1060,72 @@ class MDreader(MDAnalysis.Universe):
 
         self._tseries = Timeseries()
         tjcdx_atgrps = []
+        mem = 0
         if coords is None and props is None:
             tjcdx_atgrps = [self.atoms]
         elif coords is not None:
-            if isinstance(coords, MDAnalysis.core.groups.AtomGroup):
+            if isinstance(coords, mda.core.groups.AtomGroup):
                 tjcdx_atgrps = [coords]
-            elif type(coords) == types.IntType:
+            elif isinstance(coords, numbers.Integral):
                 tjcdx_atgrps = [self.ndxgs[coords]]
-            elif isinstance(coords, basestring):
+            elif isinstance(coords, six.string_types):
                 tjcdx_atgrps = [self.select_atoms(coords)]
             else:
                 self._tseries._coords_istuple = True
                 try:
                     for atgrp in coords:
-                        if type(atgrp) == types.IntType:
+                        if isinstance(atgrp, numbers.Integral):
                             tjcdx_atgrps.append(self.ndxgs[atgrp])
-                        elif type(atgrp) == MDAnalysis.core.AtomGroup.AtomGroup:
+                        elif isinstance(atgrp, mda.core.groups.AtomGroup):
                             tjcdx_atgrps.append(atgrp)
                         else:
                             tjcdx_atgrps.append(self.select_atoms("%s" % atgrp))
                 except:
-                    raise TypeError("Error parsing coordinate groups.\n%r" % sys.exc_info()[1])
+                    raise TypeError("Error parsing coordinate groups.\n%r"
+                                    % sys.exc_info()[1])
 
-        # Get the unique list of indices, and the pointers to that list for each requested group.
-        indices = [grp.indices for grp in tjcdx_atgrps]
-        indices_len = [len(ndx) for ndx in indices]
-        self._tseries._tjcdx_ndx, self._tseries._tjcdx_relndx = np.unique(np.concatenate(indices), return_inverse=True)
-        self._tseries._tjcdx_relndx = np.split(self._tseries._tjcdx_relndx, np.cumsum(indices_len[:-1])) 
+        if tjcdx_atgrps:
+            # Get the unique list of indices, and the pointers to that list
+            # for each requested group.
+            indices = [grp.indices for grp in tjcdx_atgrps]
+            indices_len = [len(ndx) for ndx in indices]
+            (self._tseries._tjcdx_ndx,
+             self._tseries._tjcdx_relndx) = np.unique(np.concatenate(indices),
+                                                      return_inverse=True)
+            self._tseries._tjcdx_relndx = np.split(self._tseries._tjcdx_relndx,
+                                                   np.cumsum(indices_len[:-1])) 
 
-        self._tseries._xyz = (x,y,z)
-        mem = self.atoms[self._tseries._tjcdx_ndx].positions[0].nbytes*sum(self._tseries._xyz)
+            self._tseries._xyz = (x, y, z)
+            mem = (self.atoms[self._tseries._tjcdx_ndx].positions[0].nbytes *
+                    sum(self._tseries._xyz))
 
         if props is not None:
-            if isinstance(props, basestring):
+            if isinstance(props, six.string_types):
                 props = [props]
             self._tseries._props = []
             #validkeys = self.trajectory.ts.__dict__.keys()
             for attr in props:
                 if not hasattr(self.trajectory.ts, attr):
-                    raise AttributeError('Invalid attribute for extraction. It is not an attribute of trajectory.ts')
+                    raise AttributeError('Invalid attribute for extraction. It '
+                                         'is not an attribute of trajectory.ts')
                 self._tseries._props.append(attr)
                 # Rough memory checking
                 mem += sys.getsizeof(getattr(self.trajectory.ts, attr))
                 setattr(self._tseries, attr, None)
+
         mem *= len(self)
 
-        # This is potentially a lot of memory. Check it beforehand, except for MPI, which we trust the user to do themselves.
+        # This is potentially a lot of memory. Check it beforehand,
+        # except for MPI, which we trust the user to do themselves.
         if not self.p_mpi:
             avail_mem = memoryCheck()
-            if 2*mem/(1024**2) > avail_mem.value:
-                raise_error(EnvironmentError, "You are attempting to read approximately %d MB of coordinates/values but your system only seems to have %d MB of physical memory (and we need at least twice as much memory as read bytes)." % (mem/(1024**2), avail_mem.value))
+            if 2 * mem/(1024**2) > avail_mem.value:
+                raise_error(EnvironmentError,
+                            "You are attempting to read approximately %d MB of "
+                            "coordinates/values but your system only seems to "
+                            "have %d MB of physical memory (and we need at "
+                            "least twice as much memory as read bytes)."
+                            % (mem/(1024**2), avail_mem.value))
 
         tseries = self._tseries
         if not self.p_smp:
@@ -985,7 +1182,8 @@ class MDreader(MDAnalysis.Universe):
         except KeyError:
             force_p_recheck = False
         else:
-            nprocs = int(not parallel) # parallel=True (resp. False) becomes nprocs=0 (resp. 1)
+            # parallel=True (resp. False) becomes nprocs=0 (resp. 1)
+            nprocs = int(not parallel)
             force_p_recheck = True
         self.p_args = args
         self.p_kwargs = kwargs
@@ -1007,7 +1205,8 @@ class MDreader(MDAnalysis.Universe):
                     sys.exit(0)
         else:
             pool = Pool(processes=self.p_num)
-            res = pool.map(_parallel_launcher, [(self, i) for i in range(self.p_num)]) 
+            res = pool.map(_parallel_launcher,
+                           [(self, i) for i in range(self.p_num)]) 
 
         # 1-level unravelling and de-interlacing
         if self.p_smp or (self.p_mpi and self.p_id == 0):
@@ -1031,14 +1230,16 @@ class MDreader(MDAnalysis.Universe):
                     ret2 = [subl[-1] for subl in res if len(subl) == len(res[0])]
                     return ret + ret2
             else:
-                raise NotImplementedError("Unknown parallelization mode '%s'" % self.p_mode)
+                raise NotImplementedError("Unknown parallelization mode '%s'"
+                                          % self.p_mode)
 
     def _reader(self):
         """ Applies self.p_fn for every trajectory frame. Parallelizable!
 
         """
         if self.p_smp:
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        # We need a brand new file descriptor per SMP worker, otherwise we
+        # have a nice chaos.
         # This must be the first thing after entering parallel land.
             self._reopen_traj()
 
@@ -1060,10 +1261,12 @@ class MDreader(MDAnalysis.Universe):
         """ Extracts the values asked for in mdreader._tseries. Parallelizable!
 
         """
-        # This should become a function to pass to _reader... Lots of code duplication between these two.
+        # TODO: This should become a function to pass to _reader... Lots of code
+        # duplication between these two.
 
-        if self.p_smp:# and self.p_id: ROOT IS NOT EXEMPT! Multiprocessing starts a new process for root too.
-        # We need a brand new file descriptor per SMP worker, otherwise we have a nice chaos.
+        if self.p_smp:
+        # We need a brand new file descriptor per SMP worker, otherwise we
+        # have a nice chaos.
         # This must be the first thing after entering parallel land.
             self._reopen_traj()
 
@@ -1071,26 +1274,41 @@ class MDreader(MDAnalysis.Universe):
             self._set_iterparms()
 
         if len(self._tseries._tjcdx_ndx):
-            self._tseries._cdx = np.empty((self.i_totalframes, len(self._tseries._tjcdx_ndx), sum(self._tseries._xyz)), dtype=np.float32)
+            self._tseries._cdx = np.empty((self.i_totalframes,
+                                          len(self._tseries._tjcdx_ndx),
+                                          sum(self._tseries._xyz)),
+                                          dtype=np.float32)
         for attr in self._tseries._props:
             try:
-                shape = (self.i_totalframes,) + getattr(self.trajectory.ts, attr).shape
+                shape = ((self.i_totalframes,) +
+                         getattr(self.trajectory.ts, attr).shape)
             except AttributeError:
                 shape = (self.i_totalframes,)
             try:
-                setattr(self._tseries, attr, np.empty(shape, dtype=(getattr(self.trajectory.ts, attr)).dtype))
+                setattr(self._tseries, attr,
+                        np.empty(shape,
+                                 dtype=(getattr(self.trajectory.ts,
+                                                attr)).dtype))
             except AttributeError:
-                setattr(self._tseries, attr, np.empty(shape, dtype=type(getattr(self.trajectory.ts, attr))))
+                setattr(self._tseries, attr,
+                        np.empty(shape,
+                                 dtype=type(getattr(self.trajectory.ts, attr))))
+
         if not self.i_unemployed:
             for frame in self.iterate():
                 if self._tseries._cdx is not None:
-                    self._tseries._cdx[self.iterframe] = self.atoms[self._tseries._tjcdx_ndx].positions[:,np.where(self._tseries._xyz)[0]]
+                    self._tseries._cdx[self.iterframe] = self.atoms[
+                            self._tseries._tjcdx_ndx
+                            ].positions[:, np.where(self._tseries._xyz)[0]]
                 for attr in self._tseries._props:
-                    getattr(self._tseries, attr)[self.iterframe,...] = getattr(self.trajectory.ts, attr)
+                    getattr(self._tseries, attr)[self.iterframe,
+                                            ...] = getattr(self.trajectory.ts,
+                                                           attr)
         return self._tseries
     
     def _reopen_traj(self):
-       # Let's make this generic and always loop over a list of formats. If it's the ChainReader then they all get in.
+       # Let's make this generic and always loop over a list of formats. If
+       # it's the ChainReader then they all get in.
        rdrs = []
        if self.trajectory.format == "CHAIN":
            rdrs.extend(self.trajectory.readers)
@@ -1104,7 +1322,10 @@ class MDreader(MDAnalysis.Universe):
                rdr.dcdfile.close()
                rdr.dcdfile = open(self.trajectory.filename, 'rb')
            else:
-               raise_error(AttributeError, "Don't know how to get a new file descriptor for the %s trajectory format. You'll have to skip parallelization." % rdr.format)
+               raise_error(AttributeError,
+                           "Don't know how to get a new file descriptor for "
+                           "the %s trajectory format. You'll have to skip "
+                           "parallelization." % rdr.format)
 
     def _set_frameparms(self):
         if self.opts.asframenum:
@@ -1122,66 +1343,110 @@ class MDreader(MDAnalysis.Universe):
             else:
                 self._endframe = min(self.nframes-1, self.opts.endtime)
         else:
-            # We bend over backwards here with np.rint to ensure the correct int ceil (python 2.7 doesn't have it yet).
+            # We bend over backwards here with np.rint to ensure the correct
+            # int ceil (python 2.7 doesn't have it yet).
             t0 = self.trajectory[0].time
             if self.opts.starttime is None:
                 self._startframe = 0
             elif self.opts.starttime < 0.:
-                self._startframe = self.nframes + int(math.ceil(self.opts.starttime/self.trajectory.dt)) 
+                self._startframe = self.nframes + int(
+                        math.ceil(self.opts.starttime / self.trajectory.dt)) 
             elif t0 - self.opts.starttime > 1e-7:
-                raise_error(ValueError, "You requested to start at time %f but the trajectory "
-                                        "starts already at time %f." % (self.opts.starttime, t0))
+                raise_error(ValueError,
+                            "You requested to start at time %f but the "
+                            "trajectory starts already at time %f."
+                            % (self.opts.starttime, t0))
             else:
-                self._startframe = int(np.rint(math.ceil((self.opts.starttime-t0)/self.trajectory.dt)))
-            #
-            if self.opts.endtime is None:
+                self._startframe = int(np.rint(math.ceil(
+                                         (self.opts.starttime - t0) /
+                                         self.trajectory.dt)))
+
+            if self.opts.endtime is None or self.opts.endtime is INF:
                 self._endframe = self.nframes-1
             elif self.opts.endtime < 0.:
-                self._endframe = self.nframes + int(math.ceil(self.opts.endtime/self.trajectory.dt)) 
+                self._endframe = self.nframes + int(math.ceil(
+                                                      self.opts.endtime /
+                                                      self.trajectory.dt)) 
             elif t0 - self.opts.endtime > 1e-7:
-                raise_error(ValueError, "Specified end time lower (%f ps) than the trajectory start time (%f ps)." % (self.opts.endtime, t0))
+                raise_error(ValueError,
+                            "Specified end time lower (%f ps) than the "
+                            "trajectory start time (%f ps)."
+                            % (self.opts.endtime, t0))
             else:
-                self._endframe = min(int(np.rint(math.ceil((self.opts.endtime-t0)/self.trajectory.dt))), self.nframes-1)
+                self._endframe = min(int(np.rint(math.ceil(
+                                           (self.opts.endtime - t0) /
+                                           self.trajectory.dt))),
+                                     self.nframes - 1)
 
         if self._startframe >= self.nframes:
             if self.opts.asframenum:
-                raise_error(ValueError, "You requested to start at frame %d but the trajectory only has %d frames." % (self.opts.starttime, self.nframes))
+                raise_error(ValueError,
+                            "You requested to start at frame %d but the "
+                            "trajectory only has %d frames."
+                            % (self.opts.starttime, self.nframes))
             else:
-                raise_error(ValueError, "You requested to start at time %f ps but the trajectory only goes up to %f ps." % (self.opts.starttime, (self.nframes-1)*self.trajectory.dt))
+                raise_error(ValueError,
+                            "You requested to start at time %f ps but the "
+                            "trajectory only goes up to %f ps."
+                            % (self.opts.starttime, (self.nframes - 1) *
+                               self.trajectory.dt))
         if self._endframe < self._startframe:
-            raise_error(ValueError, 'Specified end time/frame lower than start time/frame.')
+            raise_error(ValueError,
+                        'Specified end time/frame lower than start time/frame.')
         if self._endframe < 0 or self._startframe < 0:
             raise_error(ValueError, 'Resulting start/end frame lower than 0.')
 
-        self._totalframes = int(np.rint(math.ceil(float(self._endframe - self._startframe+1)/self.opts.skip)))
+        self._totalframes = int(np.rint(math.ceil(
+                                            float(self._endframe -
+                                                  self._startframe+1) /
+                                            self.opts.skip)))
 
     def _set_iterparms(self):
-        # Because of parallelization lots of stuff become limited to the iteration scope.
+        # Because of parallelization lots of stuff become limited to the
+        # iteration scope.
         # defined a group of i_ variables just for that.
+        # TODO: Make classes to hold this and parallelization attributes
         self.i_unemployed = False
         if self.parallel:
             #if self.p_num < 2 and self.p_smp:
             #    raise ValueError("Parallel iteration requested, but only one worker (MDreader.p_num) sent to work.")
 
-            #self.i_startframe and self.i_endframe must be specifically cast as
-            # ints because of an unpythonic type check in MDAnalysis that misses numpy ints.
+            # self.i_startframe and self.i_endframe must be specifically cast
+            # as ints because of an unpythonic type check in MDAnalysis that
+            # misses numpy ints.
             if self.p_mode == "interleaved":
-                frames_per_worker = np.ones(self.p_num,dtype=np.int)*(self.totalframes//self.p_num)
-                frames_per_worker[:self.totalframes%self.p_num] += 1 # Last workers to arrive work less. That's life for you.
+                frames_per_worker = (np.ones(self.p_num,dtype=int) *
+                                     (self.totalframes//self.p_num))
+                # Last workers to arrive work less. That's life for you.
+                frames_per_worker[:self.totalframes%self.p_num] += 1
                 self.i_skip = self.opts.skip * self.p_num
-                self.i_startframe = int(self.startframe + self.opts.skip*self.p_id)
-                self.i_endframe = int(self.i_startframe + int(frames_per_worker[self.p_id]-1)*self.i_skip)
+                self.i_startframe = int(self.startframe +
+                                        self.opts.skip*self.p_id)
+                self.i_endframe = int(self.i_startframe +
+                                      int(frames_per_worker[self.p_id] - 1) *
+                                      self.i_skip)
             elif self.p_mode == "block":
-                # As-even-as-possible distribution of frames per workers, allowing the first one to work more to compensate the lack of overlap.
-                frames_per_worker = np.ones(self.p_num,dtype=np.int)*((self.totalframes-self.p_overlap)//self.p_num)
-                frames_per_worker[:(self.totalframes-self.p_overlap)%self.p_num] += 1 
-                frames_per_worker[0] += self.p_overlap # Add extra overlap frames to the first worker.
+                # As-even-as-possible distribution of frames per workers,
+                # allowing the first one to work more to compensate the lack
+                # of overlap.
+                frames_per_worker = (np.ones(self.p_num, dtype=int) *
+                                     ((self.totalframes-self.p_overlap) //
+                                      self.p_num))
+                frames_per_worker[:(self.totalframes-self.p_overlap) %
+                                  self.p_num] += 1 
+                # Add extra overlap frames to the first worker.
+                frames_per_worker[0] += self.p_overlap
                 self.i_skip = self.opts.skip
-                self.i_startframe = int(self.startframe + np.sum(frames_per_worker[:self.p_id])*self.i_skip)
-                self.i_endframe = int(self.i_startframe + (frames_per_worker[self.p_id]-1)*self.i_skip)
-                # And now we subtract the overlap from the startframe, except for worker 0
+                self.i_startframe = int(self.startframe +
+                                        np.sum(frames_per_worker[:self.p_id]) *
+                                        self.i_skip)
+                self.i_endframe = int(self.i_startframe +
+                                      (frames_per_worker[self.p_id]-1) *
+                                      self.i_skip)
+                # And now we subtract the overlap from the startframe,
+                #except for worker 0
                 if self.p_id:
-                    self.i_startframe -= self.p_overlap*self.i_skip
+                    self.i_startframe -= self.p_overlap * self.i_skip
             else:
                 raise ValueError("Unrecognized p_mode \"%r\"" % (self.p_mode))
             # Let's check for zero work
@@ -1191,15 +1456,20 @@ class MDreader(MDAnalysis.Universe):
             self.i_skip = self.opts.skip
             self.i_startframe = self.startframe
             self.i_endframe = self.endframe
-        self.i_totalframes = int(np.rint(math.ceil((self.i_endframe-self.i_startframe+1)/self.i_skip)))
+        self.i_totalframes = int(np.rint(math.ceil((self.i_endframe -
+                                                    self.i_startframe + 1) /
+                                                   self.i_skip)))
         self.i_parms_set = True
 
 
     def set_parallel_parms(self, nprocs=None):
-        """Resets parallelization parameters. Use to specifiy the number of processes.
-        The nprocs argument sets how many processors to use. 0 defaults to the OS-reported
-        number, and 1 sets up serial iteration. If nprocs is left at None, then the last
-        used number of processors will be re-used (behaving like nprocs=0 if not yet set).
+        """Resets parallelization parameters
+
+        Use to specifiy the number of processes.
+        - 'nprocs' sets how many processors to use. 0 defaults to the
+          OS-reported number, and 1 sets up serial iteration. If nprocs is left
+          at None, then the last used number of processors will be re-used
+          (behaving like nprocs=0 if not yet set).
         """
         if self.p_num is None or nprocs is not None:
             self.p_num = nprocs
@@ -1208,10 +1478,13 @@ class MDreader(MDAnalysis.Universe):
         self.p_smp = self.parallel and not self.mpi
         if self.parallel:
             if self.p_mpi:
-                self.p_num = self.comm.Get_size() # MPI size always overrides manually set p_num. The user controls the pool size with mpirun -np nprocs
+                # MPI size always overrides manually set p_num.
+                # The user controls the pool size with mpirun -np nprocs
+                self.p_num = self.comm.Get_size()
             elif self.p_smp and not self.p_num:
                 self.p_num = multiprocessing.cpu_count()
-        if self.p_num == 1: # For single-core machines, or single-process MPI runs
+        # For single-core machines, or single-process MPI runs
+        if self.p_num == 1:
             self.parallel = False
             self.p_mpi = False
             self.p_smp = False
@@ -1219,9 +1492,12 @@ class MDreader(MDAnalysis.Universe):
 
     def info_header(self, line_prefix=''):
         self.ensure_parsed()
-        header = "{}{} {}\n".format(line_prefix, self.prog, " ".join(self.arguments))
+        header = "{}{} {}\n".format(line_prefix, self.prog,
+                                    " ".join(self.arguments))
         if self.version is not None:
-            header = "{}{} {}\n".format(line_prefix, self.prog, self.version) + header
+            header = "{}{} {}\n".format(line_prefix,
+                                        self.prog,
+                                        self.version) + header
         return header
 
     def _get__ndx_atgroups(self):
@@ -1235,7 +1511,10 @@ class MDreader(MDAnalysis.Universe):
                     mtx = re.match('\s*\[\s*(\S+)\s*\]\s*',line)
                     if mtx or not line:
                         if ndxheader is not None:
-                            self._ndx_atlists.append(_NamedAtlist(np.array(tmpstr.split(), dtype=int)-1, ndxheader))
+                            self._ndx_atlists.append(_NamedAtlist(
+                                                       np.array(tmpstr.split(),
+                                                                dtype=int) - 1,
+                                                       ndxheader))
                             tmpstr = ""
                         if not line:
                             break
@@ -1245,50 +1524,65 @@ class MDreader(MDAnalysis.Universe):
         else:
             resnames = np.unique(self.atoms.resnames)
             self._ndx_atlists = [_NamedAtlist(self.atoms.indices, "System")]
-            self._ndx_atlists.extend([_NamedAtlist(self.select_atoms("resname %s" % (rn,)).indices, rn) for rn in resnames ])
+            self._ndx_atlists.extend([_NamedAtlist(self.select_atoms(
+                                                         "resname %s"
+                                                         % (rn,)).indices, rn)
+                                      for rn in resnames ])
         self._ndx_names = [ndx._ndx_name for ndx in self._ndx_atlists]
 
     def _ndx_prepare(self):
-        """Prepares number and content of index prompt strings. Decides on whether to autoassign index groups."""
-        # How many groups to auto assign (it may be useful to have the same group as a reference and as an analysis group, so we check it a bit more thoroughly).
+        """Prepares number and content of index prompt strings.
+
+        Decides on whether to autoassign index groups."""
+        # How many groups to auto assign (it may be useful to have the same
+        # group as a reference and as an analysis group, so we check it a bit
+        # more thoroughly).
         if self.ng == "n":
-            self._refng = max(0,len(self.ndxparms)-1)
+            self._refng = max(0,len(self.ndxparms) - 1)
             otherng = self.opts.ng
-            self.ng = self._refng+otherng
+            self.ng = self._refng + otherng
         elif self.ng > len(self.ndxparms):
-            self._refng = max(0,len(self.ndxparms)-1)
-            otherng = self.ng-self._refng
+            self._refng = max(0,len(self.ndxparms) - 1)
+            otherng = self.ng - self._refng
         else:
             self.ng = len(self.ndxparms)
             otherng = self.ng
             self._refng = 0
 
         if not self.ndxparms:
-            self.ndxparms = ["Select a group"]*self.ng
+            self.ndxparms = ["Select a group"] * self.ng
         elif self.ng > len(self.ndxparms):
-            self.ndxparms.extend([self.ndxparms[-1]]*(otherng-1))
+            self.ndxparms.extend([self.ndxparms[-1]] * (otherng-1))
 
-        if self.smartindex and len(self._ndx_atlists)==otherng:
+        if self.smartindex and len(self._ndx_atlists) == otherng:
             self._autondx = otherng
         else:
             self._autondx = 0
 
     def _ndx_input(self):
-        """Prepares self.ndx_stdin to read from piped text or interactive prompt."""
+        """Prepares to read from piped text or interactive prompt.
+
+        """
         # Check for interactivity, otherwise just eat it from stdin
         self.ndx_stdin = []
         if sys.stdin.isatty():
             self.interactive = True
             maxlen = str(max(map(lambda x:len(x._ndx_name), self._ndx_atlists)))
             maxidlen = str(len(str(len(self._ndx_atlists)-1)))
-            maxlenlen = str(max(map(len, (map(str, (map(len, self._ndx_atlists)))))))
+            maxlenlen = str(max(map(len,
+                                    (map(str,
+                                         (map(len, self._ndx_atlists)))))))
             for ndxgid, hd in enumerate(self._ndx_atlists):
-                sys.stderr.write(("Group %"+maxidlen+"d (%"+maxlen+"s) has %"+maxlenlen+"d elements\n") % (ndxgid, hd._ndx_name, len(hd)))
+                sys.stderr.write(("Group %" + maxidlen +
+                                  "d (%"+maxlen+"s) has %" + maxlenlen +
+                                  "d elements\n")
+                                  % (ndxgid, hd._ndx_name, len(hd)))
             sys.stderr.write("\n")
         else:
             self.interactive = False
             import select
-            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]: # MPI is tricky because it blocks stdin.readlines()
+            # MPI is tricky because it blocks stdin.readlines()
+            if not self.mpi or select.select([sys.stdin], [], [], 0)[0]:
                 self.ndx_stdin = "".join(sys.stdin.readlines()).split()
 
     def _select_ndx_atgroups(self):
@@ -1300,16 +1594,22 @@ class MDreader(MDAnalysis.Universe):
                     sys.stderr.write("%s:\n" % (ndxprompt))
                 ndx_str = self._getinputline()
                 try: # First try as an integer
-                    self.ndxgs.append(self._ndx_atlists[int(ndx_str)].to_atgroup(self, ndxprompt))
+                    ndx_key = int(ndx_str)
                 except ValueError:
                     try: # Now as the group's name
-                        self.ndxgs.append(self._ndx_atlists[self._ndx_names.index(ndx_str)].to_atgroup(self, ndxprompt))
+                        ndx_key = self._ndx_names.index(ndx_str)
                     except ValueError:
-                        raise_error(KeyError, "Group name %s not found in index." % (ndx_str))
+                        raise_error(KeyError,
+                                    "Group name %s not found in index."
+                                    % (ndx_str))
+                self.ndxgs.append(self._ndx_atlists[ndx_key]
+                                  .to_atgroup(self, ndxprompt))
             else:
                 if gid == self._refng:
-                    sys.stderr.write("Only %d groups in index file. Reading them all.\n" % len(self._ndx_atlists))
-                self.ndxgs.append(self._ndx_atlists[auto_id].to_atgroup(self, ndxprompt))
+                    sys.stderr.write("Only %d groups in index file. Reading "
+                                     "them all.\n" % len(self._ndx_atlists))
+                self.ndxgs.append(self._ndx_atlists[auto_id]
+                                  .to_atgroup(self, ndxprompt))
                 auto_id += 1
 
     def _getinputline(self):
@@ -1319,32 +1619,56 @@ class MDreader(MDAnalysis.Universe):
             elif self.interactive:
                 self.ndx_stdin.extend(six.moves.input().split())
             else:
-                raise_error(IndexError, "\nNo (or not enough) index groups were passed to stdin. If you're running under MPI make sure to pipe in the group numbers; for instance:\n$ echo 2 4 6 | mpirun script.py\nor\n$ mpirun script.py < file_with_list_of_groups")
+                raise_error(IndexError,
+                            "\nNo (or not enough) index groups were passed to "
+                            "stdin. If you're running under MPI make sure to "
+                            "pipe in the group numbers; for instance:"
+                            "\n$ echo 2 4 6 | mpirun script.py"
+                            "\nor"
+                            "\n$ mpirun script.py < file_with_list_of_groups")
 
 
 class SimpleReader(MDreader):
-    """A shortcut class inheriting from MDreader. Creates an MDreader instance without argparse inheriting.
-    The arguments set the values for MDreader.opts (which won't be asked from the user) and possibly also an index.
-    The following arguments (followed by their defaults), correspond to the flags asked by the MDreader parser:
-        s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'), skip=1, v=1
-    The following arguments (followed by their defaults) will be passed to the add_ndx function. add_ndx will only be called if ng or ndxparms is set:
-        ndx=None, ndxparms=None, ng=None, smartindex=True
-    Argument check_files (default=None) has the same meaning as for the setargs function.
+    """A shortcut class inheriting from MDreader.
+
+    Creates an MDreader instance without argparse inheriting.
+
+    The arguments set the values for MDreader.opts (which won't be asked from
+    the user) and possibly also an index.
+
+    The following arguments (followed by their defaults), correspond to the
+    flags asked by the MDreader parser:
+      s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'),
+      skip=1, v=1
+
+    The following arguments (followed by their defaults) will be passed to the
+    add_ndx function. add_ndx will only be called if ng or ndxparms is set:
+      ndx=None, ndxparms=None, ng=None, smartindex=True
+
+    Argument check_files (default=None) has the same meaning as for the
+    setargs function.
     """
 
-    internal_argparse=False
+    internal_argparse = False
 
-    def __init__(self, s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=float('inf'), skip=1, v=1, check_files=None, ndx=None, ndxparms=None, ng=None, smartindex=True):
+    def __init__(self, s='topol.tpr', f='traj.xtc', o='data.xvg', b=0, e=INF,
+                 skip=1, v=1, check_files=None, ndx=None, ndxparms=None,
+                 ng=None, smartindex=True):
         super(SimpleReader, self).__init__() 
-        self.setargs(s=s, f=f, o=o, b=b, e=e, skip=skip, v=v, version=None, check_files=check_files)
+        self.setargs(s=s, f=f, o=o, b=b, e=e, skip=skip, v=v, version=None,
+                     check_files=check_files)
         if ndxparms or ng:
-            self.add_ndx(ndxparms=ndxparms, ndxdefault=ndx, ng=ng, smartindex=smartindex)
+            self.add_ndx(ndxparms=ndxparms, ndxdefault=ndx, ng=ng,
+                         smartindex=smartindex)
 
 
 class DefaultReader(MDreader):
-    """A shortcut class inheriting from MDreader. Creates an MDreader instance with default values.
+    """A shortcut class inheriting from MDreader with default values.
+
     The arguments allow the and possibility of automatic addition of an index.
-    If any arguments are present, they'll be passed to add_ndx, for the creation of an index. Refer to that function's documentation for the relevant arguments.
+    If any arguments are present, they'll be passed to add_ndx, for the
+    creation of an index. Refer to that function's documentation for the
+    relevant arguments.
     """
     def __init__(self, *args, **kwargs):
         super(DefaultReader, self).__init__() 

@@ -95,3 +95,4 @@ docs/_build/
 # Trajectory meta-info
 .*offsets.pkl
 .*_offsets.npz
+.*xtc_offsets.lock
